@@ -5,4 +5,4 @@ inline: true
 related_posts: false
 ---
 
-We released our latest work: LLAMAFUZZ: Large Language Model Enhanced Greybox Fuzzing (Under review at FSE 2025)
+We released our latest work: LLAMAFUZZ: Large Language Model Enhanced Greybox Fuzzing (Under review)
