@@ -5,7 +5,7 @@ inline: true
 related_posts: false
 ---
 
-We released our latest work: SteerDiff: Steering towards Safe Text-to-Image Diffusion Models
+We released our latest work: SteerDiff: Steering towards Safe Text-to-Image Diffusion Models (Under review at ICLR 2025)
 
 <!-- ---
 layout: post
