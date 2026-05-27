@@ -60,6 +60,9 @@
   <div id="{{ entry.key }}" class="{% if show_publication_thumbnail %}col-sm-8{% else %}col-sm-10{% endif %}">
     <!-- Title -->
     <div class="title">{{ entry.title }}</div>
+    {% if entry.keywords %}
+      <div class="publication-keywords">{{ entry.keywords }}</div>
+    {% endif %}
     <!-- Author -->
     <div class="author">
       {% assign author_array_size = entry.author_array | size %}

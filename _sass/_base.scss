@@ -746,6 +746,14 @@ footer.sticky-bottom {
         font-weight: bolder;
       }
 
+      .publication-keywords {
+        color: var(--global-theme-color);
+        font-size: 0.9rem;
+        font-weight: 500;
+        margin-top: 0.1rem;
+        margin-bottom: 0.15rem;
+      }
+
       .author {
         a {
           border-bottom: 1px dashed var(--global-theme-color);
