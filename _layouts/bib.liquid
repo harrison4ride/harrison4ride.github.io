@@ -1,8 +1,16 @@
 ---
 ---
 <div class="row">
+  {% assign publication_preview = entry.overview | default: entry.preview %}
+  {% assign show_publication_thumbnail = false %}
   {% if site.enable_publication_thumbnails %}
-    <div class="col col-sm-2 abbr">
+    {% if publication_preview or entry.abbr %}
+      {% assign show_publication_thumbnail = true %}
+    {% endif %}
+  {% endif %}
+
+  {% if show_publication_thumbnail %}
+    <div class="col col-sm-3 abbr">
       {%- if entry.abbr -%}
         {%- if site.data.venues[entry.abbr] -%}
           {% assign venue_style = null %}
@@ -25,11 +33,15 @@
           <abbr class="badge rounded w-100">{{ entry.abbr }}</abbr>
         {% endif %}
       {% endif %}
-      {% if entry.preview %}
-        {% if entry.preview contains '://' %}
-          <img class="preview z-depth-1 rounded" src="{{ entry.preview }}">
+      {% if publication_preview %}
+        {% if publication_preview contains '://' %}
+          <img class="preview z-depth-1 rounded" src="{{ publication_preview }}">
         {% else %}
-          {% assign entry_path = entry.preview | prepend: '/assets/img/publication_preview/' %}
+          {% if entry.overview %}
+            {% assign entry_path = publication_preview | prepend: '/assets/img/pub_overview/' %}
+          {% else %}
+            {% assign entry_path = publication_preview | prepend: '/assets/img/publication_preview/' %}
+          {% endif %}
           {%
             include figure.liquid
             loading="eager"
@@ -37,7 +49,7 @@
             sizes = "200px"
             class="preview z-depth-1 rounded"
             zoomable=true
-            alt=entry.preview
+            alt=publication_preview
           %}
         {% endif %}
       {% endif %}
@@ -45,7 +57,7 @@
   {% endif %}
 
   <!-- Entry bib key -->
-  <div id="{{ entry.key }}" class="{% if site.enable_publication_thumbnails %}col-sm-8{% else %}col-sm-10{% endif %}">
+  <div id="{{ entry.key }}" class="{% if show_publication_thumbnail %}col-sm-9{% else %}col-sm-10{% endif %}">
     <!-- Title -->
     <div class="title">{{ entry.title }}</div>
     <!-- Author -->
