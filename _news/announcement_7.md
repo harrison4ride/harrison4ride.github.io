@@ -5,4 +5,4 @@ inline: true
 related_posts: false
 ---
 
-Check our our work Active Layer-Contrastive Decoding Reduces Hallucination in Large Language Model Generation <a href="https://actlcd.github.io/">Project</a>.
+Check out the project page for our work <a href="https://actlcd.github.io/">Active Layer-Contrastive Decoding Reduces Hallucination in Large Language Model Generation</a>.

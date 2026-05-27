@@ -5,4 +5,4 @@ inline: true
 related_posts: false
 ---
 
-We released our latest work: LLAMAFUZZ: Large Language Model Enhanced Greybox Fuzzing (Under review)
+We released our work <a href="https://arxiv.org/abs/2406.07714">LLAMAFUZZ: Large Language Model Enhanced Greybox Fuzzing</a>.

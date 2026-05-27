@@ -5,7 +5,7 @@ inline: true
 related_posts: false
 ---
 
-We released our latest work: SteerDiff: Steering towards Safe Text-to-Image Diffusion Models (Under review)
+We released our work <a href="https://arxiv.org/abs/2410.02710">SteerDiff: Steering towards Safe Text-to-Image Diffusion Models</a>.
 
 <!-- ---
 layout: post

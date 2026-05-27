@@ -16,4 +16,6 @@ selected_papers: true # includes a list of papers marked as "selected={true}"
 social: true # includes social icons at the bottom of the page
 ---
 
-My name is Hongxiang Zhang (张鸿翔). I am working with Prof. [Tianyi Zhang](https://tianyi-zhang.github.io/) at Purdue. My research interests include LLM reasoning, LLM hallucination, code generation, and multi-agent system.
+My name is Hongxiang Zhang (张鸿翔). I am a Ph.D. student in Computer Science at Purdue University, advised by Prof. [Tianyi Zhang](https://tianyi-zhang.github.io/).
+
+My research focuses on reliable and efficient AI systems, with an emphasis on LLM reasoning, multi-agent communication, hallucination mitigation, and AI for code. I am broadly interested in robust agentic workflows that combine alignment, decoding, and lightweight diagnostic methods across software engineering, security, and generative AI applications.
