@@ -4,8 +4,7 @@
     "label": "Ph.D. Student in Computer Science",
     "image": "",
     "email": "hxxzhang@gmail.com",
-    "phone": "(530) 564-2580",
-    "url": "https://harrison4ride.github.io",
+    "phone": "(530) 564-2580", // "url": "https://harrison4ride.github.io",
     "location": {
       "city": "Lafayette",
       "countryCode": "US",
@@ -132,21 +131,6 @@
       "releaseDate": "2024",
       "url": "https://arxiv.org/abs/2410.02710",
       "summary": "Safe generative AI through lightweight prompt steering for text-to-image diffusion models."
-    }
-  ],
-  "interests": [
-    {
-      "name": "Research Interests",
-      "icon": "fa-solid fa-tag",
-      "keywords": [
-        "LLM reasoning",
-        "Multi-agent communication",
-        "Hallucination mitigation",
-        "AI for code",
-        "Software engineering",
-        "Security",
-        "Generative AI"
-      ]
     }
   ]
 }
