@@ -208,6 +208,36 @@ ul.task-list input[type="checkbox"] {
       margin: 0;
     }
   }
+
+  .profile-contact-icons {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 0.35rem;
+    margin-top: 0.55rem;
+    line-height: 1;
+
+    a {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 1.45rem;
+      height: 1.45rem;
+      color: var(--global-text-color);
+      font-size: 1.15rem;
+      text-decoration: none;
+
+      i::before {
+        color: inherit;
+        transition: color 0.2s ease-in-out;
+      }
+
+      &:hover {
+        color: var(--global-theme-color);
+        text-decoration: none;
+      }
+    }
+  }
 }
 
 .profile.float-right {
