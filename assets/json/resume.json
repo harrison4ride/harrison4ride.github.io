@@ -94,14 +94,14 @@
       "name": "Enhancing Multi-Agent Communication through Attention Steering with Context Relevance",
       "publisher": "Under review",
       "releaseDate": "2026",
-      "url": "/assets/pdf/agent-radar.pdf",
+      "url": "https://arxiv.org/abs/2605.30136",
       "summary": "Training-free context management for multi-agent systems with attention steering and temporal/spatial decay."
     },
     {
       "name": "FLARE: Fine-Grained Diagnostic Feedback for LLM Code Refinement",
       "publisher": "Under review",
       "releaseDate": "2026",
-      "url": "/assets/pdf/flare.pdf",
+      "url": "https://arxiv.org/abs/2606.03852",
       "summary": "Efficient code refinement with a lightweight line-level fault localizer and test-time scaling."
     },
     {

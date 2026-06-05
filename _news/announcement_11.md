@@ -5,4 +5,4 @@ inline: true
 related_posts: false
 ---
 
-Check out our new work <a href="/assets/pdf/flare.pdf">FLARE</a>, an efficient LLM code-refinement framework that uses lightweight fault localization to guide targeted repairs.
+Check out our new work <a href="https://arxiv.org/abs/2606.03852">FLARE</a>, an efficient LLM code-refinement framework that uses lightweight fault localization to guide targeted repairs.
