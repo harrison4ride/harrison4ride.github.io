@@ -5,4 +5,4 @@ inline: true
 related_posts: false
 ---
 
-Our work <a href="https://arxiv.org/abs/2406.07714">LLAMAFUZZ: Large Language Model Enhanced Greybox Fuzzing</a> has been accepted by AST 2026.
+Our work <a href="https://arxiv.org/abs/2406.07714">LLAMAFUZZ: Large Language Model Enhanced Greybox Fuzzing</a> has been accepted to AST 2026.

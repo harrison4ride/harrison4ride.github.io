@@ -5,4 +5,4 @@ inline: true
 related_posts: false
 ---
 
-Serve as reviewer for IEEE ICCE 2025.
+Served as a reviewer for IEEE ICCE 2025.

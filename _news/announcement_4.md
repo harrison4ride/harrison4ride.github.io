@@ -5,4 +5,4 @@ inline: true
 related_posts: false
 ---
 
-Bench press new record 100KG!!!
+Bench press new record 100KG!

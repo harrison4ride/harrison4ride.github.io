@@ -21,17 +21,17 @@
         "ECS 153 Computer Security.",
         "ECS 036A Programming and Problem Solving.",
         "ECS 036C Data Structures, Algorithms, and Programming.",
-        "ECS 140A Programming Language."
+        "ECS 140A Programming Languages."
       ]
     },
     {
       "name": "Volkswagen Group China",
-      "position": "Software and Operation Engineer Intern",
+      "position": "Software and Operations Engineering Intern",
       "startDate": "2022-02",
       "endDate": "2022-07",
       "highlights": [
         "Implemented data masking and auto-populated JIRA logs in Python.",
-        "Analyzed service and finance data with Tableau to support CIO-level strategy decisions."
+        "Analyzed service and financial data with Tableau to support CIO-level strategy decisions."
       ]
     },
     {
@@ -40,7 +40,7 @@
       "startDate": "2020-12",
       "endDate": "2021-02",
       "highlights": [
-        "Developed distributed Java invoice services for interaction between server and end-user devices.",
+        "Developed distributed Java invoice services to support communication between servers and end-user devices.",
         "Automated unit testing with JUnit and Redis-backed test cases."
       ]
     }

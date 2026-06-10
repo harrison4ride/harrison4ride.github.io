@@ -2,7 +2,7 @@
 layout: about
 title: About
 permalink: /
-subtitle: <a href='https://www.purdue.edu/'>Purdue</a>. Lafayette, IN, USA.
+subtitle: <a href='https://www.purdue.edu/'>Purdue</a>, Lafayette, IN, USA.
 
 profile:
   align: right
