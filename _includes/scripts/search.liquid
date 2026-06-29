@@ -72,6 +72,19 @@
           {%- endif -%}
         {%- endif -%}
       {%- endfor -%}
+      {%- comment -%} Wiki pages are intentionally hidden from the navbar — index them here so they stay findable via ⌘K search. {%- endcomment -%}
+      {%- assign wiki_pages = site.pages | where_exp: "p", "p.wiki_generated" | sort: "url" -%}
+      {%- for p in wiki_pages -%}
+        {
+          {%- assign wtitle = p.title | escape | strip -%}
+          id: "wiki-{{ p.url | slugify }}",
+          title: "{{ wtitle | truncatewords: 13 }}",
+          section: "Wiki",
+          handler: () => {
+            window.location.href = "{{ p.url | relative_url }}";
+          },
+        },
+      {%- endfor -%}
       {%- for post in site.posts -%}
         {
           {%- assign title = post.title | escape | strip -%}

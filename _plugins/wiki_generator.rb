@@ -16,10 +16,10 @@
 require_relative 'wiki_render'
 
 module WikiSite
-  # source dir (relative to site.source) => URL prefix
+  # source dir (relative to site.source) => { url prefix, display title for the index page }
   SOURCES = {
-    'ai_research_wiki' => 'wiki',
-    'deeplearning'     => 'deeplearning'
+    'ai_research_wiki' => { 'prefix' => 'wiki', 'title' => 'AI Researcher Intern Wiki' },
+    'deeplearning'     => { 'prefix' => 'deeplearning', 'title' => 'DL Fundamentals Wiki' }
   }.freeze
 
   class WikiPage < Jekyll::PageWithoutAFile
@@ -43,7 +43,9 @@ module WikiSite
     priority :low
 
     def generate(site)
-      SOURCES.each do |dir, prefix|
+      SOURCES.each do |dir, cfg|
+        prefix     = cfg['prefix']
+        wiki_title = cfg['title']
         root = site.in_source_dir(dir)
         next unless File.directory?(root)
 
@@ -59,8 +61,9 @@ module WikiSite
           out_dir   = index ? prefix : "#{prefix}/#{stem}"
           permalink = index ? "/#{prefix}/" : "/#{prefix}/#{stem}/"
 
-          title, html = WikiRender.render(File.read(path), link_map)
-          title = stem if title.nil? || title.empty?
+          h1, html = WikiRender.render(File.read(path), link_map)
+          # index page uses the configured wiki name; chapters use their own H1
+          title = index ? wiki_title : (h1.nil? || h1.empty? ? stem : h1)
           site.pages << WikiPage.new(site, out_dir, title, html, permalink)
         end
       end
