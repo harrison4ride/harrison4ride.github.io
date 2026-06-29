@@ -229,6 +229,8 @@ kramdown:
 include: ["_pages"]
 exclude:
   - bin/
+  - ai_research_wiki/ # raw wiki source — published as styled pages by _plugins/wiki_generator.rb (read at build time, not copied verbatim)
+  - deeplearning/ # raw wiki source — published as styled pages by _plugins/wiki_generator.rb (read at build time, not copied verbatim)
   - CONTRIBUTING.md
   - CUSTOMIZE.md
   - Dockerfile

@@ -11,3 +11,7 @@ assets/libs/
 node_modules/
 vendor
 .idea
+
+# Large/copyrighted source PDF for the deeplearning wiki — kept locally, not published
+# (the wiki pages are generated from the .md files; the PDF is unreferenced & excluded from the build)
+deeplearning/*.pdf
