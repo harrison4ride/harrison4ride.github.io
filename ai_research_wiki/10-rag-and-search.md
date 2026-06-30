@@ -130,16 +130,19 @@ MTEB 等 benchmark 可做初筛，但必须用自己的 query、文档、语言�
 
 ### Hybrid Search
 
-结合 BM25 和 dense retrieval：
+结合 **BM25（稀疏 / 词法）** 和 **dense retrieval（稠密 / 语义）**——两者强弱正好互补：
 
-- Sparse 对精确术语、编号、人名、错误码强。
-- Dense 对语义改写和同义表达强。
-- 可用 Reciprocal Rank Fusion（RRF）合并排名：
+- **BM25（sparse / lexical）**：升级版 TF-IDF 的关键词打分（TF × IDF × 文档长度归一），靠**字面词重叠**,用倒排索引。对精确术语、编号、人名、错误码、长尾实体强;零训练、可解释、跨域稳。弱点是**词法鸿沟**——同义/改写匹配不上（“心梗” vs “心肌梗死”）。
+- **Dense（embedding / semantic）**：用编码器把 query/doc 映射成稠密向量，按向量相似度（cosine / 点积）+ ANN（FAISS、HNSW）召回。靠**语义相似度**，能匹配同义和改写；弱点是易漏精确关键词、需训练、领域迁移敏感。
+- **融合方式**：
+  - **RRF（Reciprocal Rank Fusion）**：只看排名、无需归一化分数，最常用、最稳：
 
-$$
-\operatorname{RRF}(d)=
-\sum_j\frac{1}{k+\operatorname{rank}_j(d)}
-$$
+    $$
+    \operatorname{RRF}(d)=\sum_j\frac{1}{k+\operatorname{rank}_j(d)}\qquad(k\text{ 常取 }60)
+    $$
+
+  - 或**加权分数融合** $\alpha\cdot\widetilde{\text{BM25}}+(1-\alpha)\cdot\widetilde{\text{dense}}$，但需先把两路分数各自归一化（量纲不同）。
+- 典型链路：BM25 + dense 双路召回 → RRF 合并 → cross-encoder rerank。
 
 ### Reranking
 
@@ -254,6 +257,27 @@ $$
 ### Adaptive RAG
 
 按问题复杂度选择不检索、单步检索或多步检索，减少无必要成本。
+
+### 主动检索：按生成置信度触发（FLARE / DRAGIN）
+
+不在开头一次性检索，而是**边生成边按需检索**——监控生成 token 的置信度，发现“心里没底”才去查。
+
+- **FLARE**（Forward-Looking Active Retrieval, 2023）：先生成一句**临时的下一句**；若其中有 token 的预测概率低于阈值 $\theta$，就把这些**低置信片段**当作知识缺口 → 用它构造 query 去检索 → 带着证据**重写**这句。“前瞻”在于用即将生成的内容来决定要不要查。
+- **DRAGIN**（2024）：在 FLARE 上更细——按 **token 熵（不确定性）+ 该 token 的重要性（self-attention）+ 对后续 token 的影响**共同决定**何时**检索，并用 self-attention 构造“查什么”的 query，缓解 FLARE 只用单句、query 不准的问题。
+- 经验：对约 **40–80%** 的句子触发检索通常最好；触发太少会漏知识，太多则慢且引入噪声。
+
+### 何时该检索？（触发信号小结）
+
+核心动机：**检索不是越多越好**。它加延迟和成本，还可能塞进干扰证据；当模型本就知道答案时，检索反而**可能拉低**正确率（Mallen et al., *When Not to Trust LMs*, 2023——检索对**长尾/冷门实体**有用，对热门事实可能有害）。所以应**按需触发**，常见信号：
+
+| 触发信号 | 代表工作 | 直觉 |
+| --- | --- | --- |
+| 生成 token 置信度低 / 熵高 | FLARE、DRAGIN | 模型“没底”才查 |
+| 模型自评是否需要 | Self-RAG（见上） | 让模型自己决定 retrieve |
+| 问题复杂度 | Adaptive RAG（见上） | 简单题不查、难题多跳查 |
+| 实体冷门 / 长尾 | Mallen 2023 | 参数记忆覆盖不到的才查 |
+
+一句话：**模型对答案越不确定、知识越长尾，越该检索；反之直接用参数记忆，省成本也更准。**
 
 ### Agentic RAG
 
