@@ -23,6 +23,16 @@ $$
 
 在 self-attention 中，Q/K/V 都来自同一输入 $X$，但 $W_Q,W_K,W_V$ 是三组独立的可学习投影参数，并不共享。
 
+**直觉：Q/K/V 的“身世”。** 把 $W_Q,W_K,W_V$ 想成模型**学出来的三副“滤镜 / 眼镜”**，把同一个 token 投影成三种视角：
+
+- $Q$（Query）= 当前 token 的“**搜索请求**”：我在找什么？
+- $K$（Key）= 各 token 的“**标签**”：我能提供什么？
+- $V$（Value）= 各 token 的“**内容本体**”：真正要被传递的语义。
+
+**为什么只有 $QK^\top$ 有意义？** 它衡量“搜索请求”与“标签”的匹配分数（token 间相关性），$V$ 不参与匹配。$V$ 的作用是：$\operatorname{softmax}(QK^\top/\sqrt{d_k})$ 只给出**注意力权重（分配比例）**，$V$ 才是被这些权重**加权混合**出来的实际内容——没有 $V$，就只有一份“比例”而没有内容可传。
+
+一句话点题：真正被训练学到的“真东西”是**静态的透镜** $W_Q,W_K,W_V$，$X$ 是动态输入；同一套 $W$ 以不变应万变，把任意 $X$ 规范成 $Q/K/V$。
+
 Transformer 比 RNN 更适合大规模长序列训练，主要因为 token 间计算可并行，任意两个位置的信息路径长度为 $O(1)$，而 RNN 必须顺序计算，路径长度为 $O(n)$，更容易出现梯度衰减和吞吐瓶颈。
 
 ### 深入追问
@@ -36,7 +46,15 @@ Transformer 比 RNN 更适合大规模长序列训练，主要因为 token 间�
 
 **为什么除以 $\sqrt{d_k}$？**
 
-假设 $q_i,k_i$ 独立、均值 0、方差 1，则点积方差约为 $d_k$。缩放后方差回到常数量级，softmax 梯度更稳定。
+点积 $q\cdot k=\sum_{i=1}^{d_k}q_ik_i$ 是 $d_k$ 个乘积之和。若各分量独立、均值 0、方差 1，则点积**方差 $\approx d_k$**（维度越大，数值越容易变得很大）。数值过大时 softmax 进入**饱和（赢者通吃，某个位置 $\approx100\%$）**，该处梯度 $\approx0$，模型学不动。除以 $\sqrt{d_k}$ 把方差**缩回 $\approx1$**（要让方差缩小 $N$ 倍就除以 $\sqrt N$），softmax 平滑、梯度健康。
+
+**为什么把 $K,V$ 提前投影好，而不是“传 $X$、最后再乘 $W_V$”？**
+
+数学上二者等价（$\operatorname{softmax}(\cdot)(XW_V)=(\operatorname{softmax}(\cdot)X)W_V$），先算 $V=XW_V$ 是**工程**考量：
+
+- **多头先降维**：每个头先把维度从 $d_{\text{model}}$ 降到 $d_{\text{model}}/h$（如 $4096\to128$）再与 $n\times n$ 注意力矩阵相乘，FLOPs 小得多；若拿全维度 $X$ 去乘 $n\times n$，计算量暴涨数倍。
+- **子空间解耦**：$W_V$ 把 $X$ 投影到“内容 / 价值”子空间，过滤并解耦特征。
+- **KV Cache**：推理时预先算好 $K,V$ 存起来即可复用；若只缓存 $X$，每步还要按各头的 $W_K,W_V$ 重新提特征。
 
 **训练和推理有什么差异？**
 
@@ -98,12 +116,14 @@ $$
 
 Decoder self-attention 使用 causal mask，禁止位置 $t$ 读取未来位置 $>t$，避免 teacher forcing 训练时发生答案泄漏。
 
+**面试核心：Decoder 比 Encoder 多两点。** (1) **Masked / causal self-attention**——单向，训练时戴因果 mask 禁止第 $t$ 步看到 $>t$ 的位置（防止“抄答案”）；而 Encoder 是**双向**、可看全局。(2) 经典 enc-dec 里 Decoder 特有一层 **Cross-Attention**（见下）。
+
 ### Cross-Attention 的 Q/K/V 来自哪里？
 
 - $Q$：来自 Decoder 上一个子层的输出。
 - $K,V$：来自 Encoder 最后一层的输出。
 
-它让 Decoder 在生成每个 token 时，动态读取输入序列中相关的位置。例如在翻译中，decoder 的当前输出位置可以关注对应的源语言词语。
+它让 Decoder 在生成每个 token 时，动态读取输入序列中相关的位置。例如在翻译中，decoder 的当前输出位置可以关注对应的源语言词语。一句话：用 **Decoder 的 $Q$（当前生成需求）去检索 Encoder 的 $K,V$（已编码的源序列）**。
 
 Decoder-only LLM 没有独立 Encoder，因此通常也没有这种 Encoder-Decoder Cross-Attention；多模态模型则可能使用 Cross-Attention 接收视觉或音频表示。
 
@@ -174,7 +194,9 @@ PE_{(pos,2i+1)}
 =\cos\left(\frac{pos}{10000^{2i/d_{\text{model}}}}\right)
 $$
 
-不同维度对应不同频率。选择固定 sin/cos 的动机包括：
+不同维度对应不同频率。**为什么用 sin/cos 而不是 $1,2,3,\dots$？** 直接用递增的大整数会**淹没**词向量（词向量数值多在 $[-1,1]$）；sin/cos 把位置编成**不同频率的指针**——低维分量转得快（像秒针）、高维分量转得慢（像时针），取值恒在 $[-1,1]$，不同位置的“指针组合”唯一，且可编码任意长度的位置。
+
+选择固定 sin/cos 的动机包括：
 
 - 不增加可训练位置参数。
 - 任意位置都可直接计算，因此形式上可用于训练长度外的位置。
@@ -197,7 +219,7 @@ $$
 
 ### 核心思想
 
-RoPE（Rotary Position Embedding）不把位置向量加到 hidden state 上，而是根据位置 $m$ 对 Query 和 Key 的每对二维通道做旋转：
+RoPE（Rotary Position Embedding）不把位置向量加到 hidden state 上，而是根据位置 $m$ 对 Query 和 Key 的每对二维通道做**旋转**（把词向量看作平面里的箭头，位置越靠后、转的角度越大）：
 
 $$
 \begin{bmatrix}
@@ -228,7 +250,7 @@ $$
 =q^\top R_{n-m}k
 $$
 
-因此 Q/K 的点积只依赖相对位置 $n-m$，同时每个表示仍保留自身绝对位置对应的旋转相位。
+因此 Q/K 的点积只依赖相对位置 $n-m$，同时每个表示仍保留自身绝对位置对应的旋转相位。直觉：给每个词的是**绝对**旋转角，但做 $Q\cdot K$ 点积时绝对位置**自动抵消、只剩相对距离 $n-m$**（语言里相对距离往往比绝对位置更重要）。
 
 ### 相比绝对位置编码
 
@@ -251,6 +273,22 @@ $$
 - **NTK-aware scaling**：按维度调整频率基数，尽量兼顾高频局部信息和低频长期信息。
 - **YaRN**：对不同频率分段处理，并配合 attention scaling。
 - 仅修改 RoPE 参数不等于模型真正学会长上下文利用，仍要检查检索、推理、困惑度以及真实长文任务。
+
+---
+
+## 3.1 KV Cache 是什么？为什么不能缓存 QK 分数？
+
+### 30 秒回答
+
+自回归**逐 token** 生成。历史 token 的 $K,V$ 一旦算出就**固定不变**，于是算一次就**存进显存缓存**；生成新 token 时只算它自己的 $Q_t,K_t,V_t$，并**复用缓存的** $K_{1..t-1},V_{1..t-1}$，避免把历史 token 重新乘 $W_K,W_V$ 提特征。
+
+### 为什么不能缓存 QK（注意力分数）？
+
+$Q_t$ 是当前新 token 专属的“搜索请求”，**每步都变**；$Q$ 一变，上一步的 $QK$ 分数就作废，必须用新的 $Q_t$ 与所有 $K$ 重算。所以 KV Cache 省下的是“**把历史 token 重新投影成 $K,V$**”的计算，而不是省 $QK$ 乘法。一句话：缓存的是“**被搜索的库（K/V）**”，不是“搜索结果”。
+
+### 代价
+
+KV Cache **极吃显存**，且随上下文长度、并发数线性增长，长上下文 / 高并发容易 OOM。这正是 MQA/GQA、PagedAttention、KV 压缩等方案的动机。
 
 ---
 
@@ -281,7 +319,7 @@ $$
 
 ### 为什么要共享 K/V？
 
-自回归推理要为每层缓存所有历史 token 的 K/V。粗略地，KV Cache 大小为：
+动机是 decode 阶段受**显存带宽墙（memory-bound）**：瓶颈不在算力，而在把庞大的 **KV Cache** 从显存搬到计算核心。自回归推理要为每层缓存所有历史 token 的 K/V。粗略地，KV Cache 大小为：
 
 $$
 2 \times L \times n_{\text{layers}} \times H_{KV}
@@ -300,7 +338,7 @@ $$
 
 ### 面试加分点
 
-- 共享的是 K/V 投影头，不是 Query 头。
+- 共享的是 K/V 投影头，不是 Query 头：$Q$ 代表“当下的思考需求”，需保持多样；$K,V$ 是历史静态信息，可压缩共享。MHA → MQA 缓存缩到约 $1/h$、吞吐暴涨但质量掉点；GQA（如 32 头 → 8 组）缓存约 $1/4$、质量 ≈ MHA。
 - GQA 的优势主要体现在自回归 decode 和长上下文服务，不应只说“参数更少”。
 - DeepSeek 的 MLA 进一步把 K/V 表示压缩到低维潜在向量，目标同样是降低 KV Cache，但机制不同于简单共享 KV 头。
 
@@ -320,6 +358,8 @@ $$
 - 自回归生成接口自然，容易通过 prompt 统一大量任务。
 - Scaling 路径和推理基础设施成熟。
 - 这不代表 decoder-only 在所有任务都更优。高吞吐 embedding、分类或固定输入到输出任务，encoder 或 encoder-decoder 仍可能更高效。
+
+**架构演进脉络（面试可一句话概括）**：Encoder-only（BERT）**没有被淘汰**，擅长**理解类**任务——文本转 embedding 做**检索 / 相似匹配**、**分类 / 情感**、**NER**，体积小、快、双向理解深；翻译等结构化 seq2seq 走 **Encoder-Decoder**（原始 Transformer、T5、BART）；现代通用 LLM 收敛到 **Decoder-only**（GPT、Llama、Qwen），把万物统一成 next-token 续写，利于 Scaling 与工程。
 
 ### Transformer 相比 LSTM 的优势与代价
 
@@ -548,7 +588,7 @@ $$
 
 ### 为什么用 LayerNorm 而不是 BatchNorm？
 
-LayerNorm 对单个 token 的特征维归一化，不依赖 batch 中其他样本；BatchNorm 则使用 batch 统计量。
+LayerNorm 对**单个样本内部的所有特征维**归一化，与 batch 大小、序列长度**无关**；BatchNorm 则对一个 batch 内所有样本的同一维求统计。
 
 Transformer 更适合 LayerNorm，主要因为：
 
@@ -558,13 +598,10 @@ Transformer 更适合 LayerNorm，主要因为：
 
 ### 为什么当前 LLM 多使用 Pre-Norm？
 
-Pre-Norm 形式为：
+残差块记为 $x_{\text{out}}=x+\operatorname{SubLayer}(\cdot)$，区别在于 LayerNorm 放在残差之前还是之后：
 
-$$
-x_{l+1}=x_l+F(\operatorname{Norm}(x_l))
-$$
-
-残差主干更接近恒等映射，梯度能更直接传播，深层模型训练通常更稳定。Post-Norm 有时最终表示能力更强，但深层训练更敏感。
+- **Post-Norm**（原论文）：$x_{\text{out}}=\operatorname{LayerNorm}(x+\operatorname{SubLayer}(x))$，归一化在残差**之后**；深层堆叠时底层**梯度易消失**、训练不稳，往往需要小心的 **LR warmup**。有时最终表示能力更强，但深层训练更敏感。
+- **Pre-Norm**（现代 LLM 标配）：$x_{\text{out}}=x+\operatorname{SubLayer}(\operatorname{LayerNorm}(x))$，归一化在子层**之前**；残差主干是一条**无阻碍的“高速公路”**，梯度可近乎**无损回传**，深层训练更稳定。
 
 ### RMSNorm 和 LayerNorm 有何区别？
 
@@ -597,23 +634,27 @@ RMSNorm 更简单、计算略省，现代 decoder-only LLM 中很常见。
 - Self-Attention 每层计算复杂度约为 $O(n^2d)$，注意力矩阵显存为 $O(n^2)$。
 - RNN 每层计算复杂度约为 $O(nd^2)$，但沿 $n$ 个时间步串行。
 
+**别把 $O(n^2)$ 简单理解成“更慢”。** 每个 Q 都要和全部 $n$ 个 K 打一次分，得到 $n\times n$ 注意力矩阵，计算与显存都是 $O(n^2)$，长序列显存爆炸（$n=10^5\Rightarrow10^{10}$）。但这 $n^2$ 次打分**彼此独立、可并行**（GPU 擅长），任意两 token 间**路径长度 $O(1)$**（没有 RNN 那种长程信息瓶颈）；RNN 虽是 $O(n)$ 却**必须串行**（第 $t$ 步等第 $t-1$ 步）。所以只要显存够，Transformer 实际更快、长依赖也更好。
+
 严格的训练显存还必须计入每层激活，不能简单把 RNN 总空间写成 $O(d)$。当 $n<d$ 时，self-attention 的单层计算甚至可能更便宜；当 $n$ 很长时，$n^2$ 项成为瓶颈。
 
 例如序列从 2048 增长到 4096，标准注意力矩阵元素数约增加到 4 倍。这正是长文本训练和 prefill 容易变慢、占显存的原因。
 
 ### Cross-Entropy 在做什么？
 
-对真实下一个 token $y_t$ 最小化负对数似然：
+直觉：逼模型当“**猜下一个词的神算子**”——每个位置在词表上输出一个概率分布，真实的下一个词概率越高、loss 越小。形式上对真实下一个 token $y_t$ 最小化负对数似然：
 
 $$
 \mathcal L=-\sum_t \log p_\theta(y_t\mid y_{<t})
 $$
 
-它等价于最小化经验数据分布与模型分布的交叉熵。Perplexity 通常为平均 token loss 的指数，但不同 tokenizer 下不可直接公平比较。
+它等价于最小化经验数据分布与模型分布的交叉熵；预训练本质就是用 CE 逼模型的预测分布**逼近真实语言分布**。Perplexity 通常为平均 token loss 的指数，但不同 tokenizer 下不可直接公平比较。
 
 ### 修改开源模型时如何读取 Attention Weights？
 
 不要假设模型调用一定返回完整 attention matrix。现代实现可能使用 FlashAttention、PyTorch SDPA 或 fused kernel，它们为了节省 $O(n^2)$ 显存，通常不会物化或返回注意力权重；即使设置 `output_attentions=True`，也可能触发慢速 eager fallback，或因具体模型实现而不受支持。
+
+**顺带点明 FlashAttention 是什么。** 它是**实现层优化，数学结果与普通 Attention 完全一致**：靠**分块（tiling）+ 在线 softmax（online softmax）+ 边算边扔**，在极快的片上 SRAM 里把 $QK^\top$、softmax、乘 $V$ 一气呵成，**不落地那张 $n\times n$ 矩阵**，因此显存从 $O(n^2)$ 降到 $O(n)$、速度提升约 2–4×（属“访存受限”问题的优化）。正因为它不显式生成 $n\times n$ 注意力矩阵，想 `output_attentions=True` 拿权重才会 OOM 或退化成慢速 eager attention。
 
 进行可视化或干预前应：
 
