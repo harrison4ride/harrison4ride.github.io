@@ -672,6 +672,169 @@ print(weights.shape)  # (2, 4, 5, 5)
 
 ---
 
+## 6.1 RoPE（旋转位置编码）
+
+### 原理与直觉
+
+传统绝对位置编码把位置向量**加**到词向量上，长文本外推表现不佳。RoPE 换了个思路：**用旋转表达位置**。
+
+把词向量的每两个通道看作平面上的一个箭头，位置 $m$ 就把这个箭头旋转 $m\theta_i$ 的角度（不同通道用不同频率 $\theta_i$，低维转得快、高维转得慢）。
+
+**关键性质**：两个分别处于位置 $m$、$n$ 的向量做点积（算 Attention Score）时，绝对旋转角自动抵消，结果**只依赖相对距离 $m-n$**：
+
+$$
+\langle R_m q,\ R_n k\rangle = q^\top R_{n-m} k
+$$
+
+这正契合语言里「相对距离比绝对位置更重要」的直觉，也是 LLaMA / Qwen / ChatGLM 等主流开源模型的标配。
+
+### 实现
+
+```python
+import numpy as np
+
+
+def apply_rope(x, freq_base=10000.0):
+    """
+    x: (batch_size, seq_len, num_heads, d_k)，d_k 必须是偶数（两两配对做二维旋转）
+    """
+    batch_size, seq_len, num_heads, d_k = x.shape
+    assert d_k % 2 == 0, "d_k 必须是偶数才能进行两两旋转"
+
+    # 1. 每个特征对的旋转频率 theta_i = base^(-2i/d_k)
+    i = np.arange(0, d_k, 2)
+    theta = 1.0 / (freq_base ** (i / d_k))          # (d_k/2,)
+
+    # 2-3. 位置索引 m 与角度 m*theta 的外积
+    m = np.arange(seq_len)
+    freqs = np.outer(m, theta)                      # (seq_len, d_k/2)
+
+    # 4. cos/sin 各复制一遍，对齐交错排列的 d_k 维
+    cos_val = np.repeat(np.cos(freqs), 2, axis=-1)[None, :, None, :]   # (1, seq_len, 1, d_k)
+    sin_val = np.repeat(np.sin(freqs), 2, axis=-1)[None, :, None, :]
+
+    # 5. 旋转：对每一对 (x_even, x_odd) 做 x*cos + (-x_odd, x_even)*sin
+    swapped = np.stack([-x[..., 1::2], x[..., ::2]], axis=-1)
+    swapped = swapped.reshape(batch_size, seq_len, num_heads, d_k)
+
+    return x * cos_val + swapped * sin_val
+```
+
+对每一对通道 $(x_{2i},x_{2i+1})$ 展开就是标准的二维旋转：
+
+$$
+x'_{2i}=x_{2i}\cos(m\theta_i)-x_{2i+1}\sin(m\theta_i),\qquad
+x'_{2i+1}=x_{2i+1}\cos(m\theta_i)+x_{2i}\sin(m\theta_i)
+$$
+
+### 关键追问
+
+- **为什么 `np.repeat(..., 2)` 而不是 `np.tile`？** 这份实现用的是**交错**排列（相邻两维为一对），所以每个角度要连续复制两次与 $(x_{2i},x_{2i+1})$ 对齐。若改用「前半 / 后半」配对的实现（HuggingFace 常见的 `rotate_half`），则要用 `np.tile` 并相应改配对方式——两种约定不能混用。
+- **验证方式？** 旋转是正交变换，所以 **保范数**；位置 0 不旋转（等于原向量）；把同一对向量放到不同绝对位置、保持相对距离不变，点积应完全相同。
+- **怎么扩长？** 位置插值（Position Interpolation）把每步转角调小，让同样的角度范围装下更长序列；另有 NTK-aware、YaRN 等改进。
+- **作用在哪？** 只对 **Q 和 K** 施加（因为只有它们进入点积），不作用于 V。
+
+---
+
+## 6.2 LayerNorm
+
+### 原理与直觉
+
+深层网络里每层输出的数值分布会剧烈漂移，导致训练不稳。LayerNorm 对**单个样本内部的所有特征维**做归一化（均值 0、方差 1），再乘可学习的 $\gamma$、加 $\beta$ 恢复表达能力：
+
+$$
+y=\gamma\odot\frac{x-\mu}{\sqrt{\sigma^2+\epsilon}}+\beta
+$$
+
+**与 BatchNorm 的区别（面试必考）**：BatchNorm 对「一个 batch 内所有样本的同一维」求统计，受 batch 大小影响极大；LayerNorm 只看单个样本自己，**与 batch 大小、序列长度完全无关**，因此适配变长序列和逐 token 的自回归推理，是 NLP / Transformer 的标配。
+
+### 实现
+
+```python
+import numpy as np
+
+
+def layer_norm(x, gamma, beta, eps=1e-5):
+    """
+    x: (batch_size, seq_len, d_model)
+    gamma, beta: (d_model,) 可学习缩放与偏移
+    """
+    mean = np.mean(x, axis=-1, keepdims=True)       # 沿特征维
+    variance = np.var(x, axis=-1, keepdims=True)
+    x_norm = (x - mean) / np.sqrt(variance + eps)   # eps 防止分母为 0
+    return gamma * x_norm + beta
+```
+
+### 关键追问
+
+- **为什么 `axis=-1`？** 必须沿**特征维** $d_{\text{model}}$，不能沿 batch 或 seq 维；写错轴是最常见的 bug。
+- **`eps` 放在根号里还是外面？** 主流实现（含 PyTorch）是 $\sqrt{\sigma^2+\epsilon}$，放在**根号内**。
+- **RMSNorm 有什么不同？** 去掉减均值和 $\beta$，只用均方根缩放 $x/\sqrt{\operatorname{mean}(x^2)+\epsilon}\cdot\gamma$，更省算力，现代 decoder-only LLM 常用。
+- **放在残差前还是后？** Post-Norm（原论文）深层易梯度消失、需 warmup；**Pre-Norm** 让残差成为无阻碍主干、训练更稳，是现代 LLM 标配。
+
+---
+
+## 6.3 Beam Search
+
+### 原理与直觉
+
+生成文本时每步只取概率最高的词（Greedy）容易陷入局部最优；穷举所有组合又会指数爆炸。Beam Search 是折中：**同时保留当前得分最高的 $k$ 条路径**（$k$ = beam size），每步扩展后再全局剪枝回 $k$ 条，直到遇到结束符，最后挑总分最高的一条。
+
+分数用**累计对数概率**（把连乘变连加，避免概率连乘下溢）：
+
+$$
+\text{score}(y_{1:t})=\sum_{i=1}^{t}\log p(y_i\mid y_{<i})
+$$
+
+### 实现
+
+```python
+import numpy as np
+
+
+def beam_search(step_fn, start_token, eos_token, beam_size=3, max_len=10,
+                length_penalty=0.0):
+    """
+    step_fn(seq) -> 长度为 vocab 的 log-prob 向量（给定已生成序列，预测下一个 token）
+    返回得分最高的 (score, seq)
+    """
+    beams = [(0.0, [start_token])]      # (累计 log-prob, 序列)
+    finished = []
+
+    for _ in range(max_len):
+        candidates = []
+        for score, seq in beams:
+            if seq[-1] == eos_token:                       # 已结束，移入 finished
+                finished.append((score, seq))
+                continue
+            log_probs = step_fn(seq)
+            for tok in np.argsort(log_probs)[-beam_size:]:  # 每束只展开 top-k
+                candidates.append((score + log_probs[tok], seq + [int(tok)]))
+
+        if not candidates:
+            break
+        candidates.sort(key=lambda t: t[0], reverse=True)
+        beams = candidates[:beam_size]                      # 全局剪枝回 k 条
+
+    finished.extend(beams)
+
+    def norm(item):                                         # 长度惩罚
+        s, seq = item
+        return s / (len(seq) ** length_penalty) if length_penalty else s
+
+    return max(finished, key=norm)
+```
+
+### 关键追问
+
+- **为什么要长度惩罚？** 累计 log-prob 恒为负，越长分越低，不加惩罚会**偏爱短句**。常用 $\text{score}/|y|^{\alpha}$（$\alpha\approx0.6\sim1.0$）。
+- **Beam Search 保证最优吗？** **不保证**。每步全局只留 $k$ 条，可能把「当下分低、后面才翻盘」的路径提前剪掉，所以它是启发式近似而非精确搜索。
+- **beam 越大越好吗？** 不是。$k$ 增大计算量线性增长，且实践中过大反而更易产生**通用、乏味**的句子（beam search curse）；开放式生成常改用 top-k / top-p 采样。
+- **复杂度？** 每步约 $O(k\cdot V)$（$V$ 为词表），整体 $O(k V \cdot L)$。
+- **和 Greedy 的关系？** $k=1$ 时 Beam Search 退化为 Greedy Search。
+
+---
+
 ## 7. 决策树：信息熵与信息增益
 
 决策树每一步要决定「先问哪个特征、在哪切」，标准是：切完之后子集**最纯**。
@@ -790,7 +953,8 @@ y_pred = clf.predict(X_test)
 
 - 稳定 Softmax、LogSoftmax、Cross-Entropy。
 - 单头/多头 Attention 与 causal mask。
-- LayerNorm、RMSNorm。
+- LayerNorm、RMSNorm、RoPE。
+- Beam Search（含长度惩罚）与常见解码策略。
 - 线性回归、Ridge、Logistic Regression。
 - K-Means（含 k-means++ 初始化）、PCA 的核心步骤。
 - 决策树的熵与信息增益（Entropy / Information Gain）。
