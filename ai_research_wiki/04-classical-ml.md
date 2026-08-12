@@ -2,7 +2,23 @@
 
 [返回目录](README.md)
 
+| 任务       | 目标                     | 常见模型                                                  |
+| ---------- | ------------------------ | --------------------------------------------------------- |
+| 回归       | 预测连续值               | Linear Regression、Regression Tree                        |
+| 分类       | 预测离散类别             | Logistic Regression、SVM、Decision Tree、Naive Bayes、KNN |
+| 无监督学习 | 在没有标签时发现数据结构 | K-Means、GMM、Hierarchical Clustering、Association Rules  |
+
+这些模型并不是互不相关：
+
+- Linear Regression、Logistic Regression 和 Linear SVM 都从 $w^\top x+b$ 出发，但使用不同的输出与 Loss。
+- Decision Tree 是基础模型；Random Forest 用 Bagging 降低单树的 Variance，XGBoost 用 Boosting 逐步修正错误。
+- K-Means 做 Hard Clustering；GMM 做概率化的 Soft Clustering；EM 是训练 GMM 的通用算法。
+- KNN、SVM 和 K-Means 都依赖距离或内积，因此对 Feature Scaling 很敏感。
+- MAE、MSE 和 Cross-Entropy 不只是评估指标，也分别对应不同的概率假设和训练目标。
+
 ## 1. 线性回归
+
+Linear Regression 假设目标的条件均值可以表示为输入特征的线性组合，并使用 OLS 最小化残差平方和。在高斯噪声假设下，最小化 MSE 等价于 Maximum Likelihood。这里的“线性”是对参数线性，所以仍然可以加入多项式、Spline 和交互项。
 
 ### 模型
 
@@ -88,6 +104,16 @@ $$
 
 ## 2. MAE、MSE、KL Divergence 与 Cross-Entropy
 
+Loss 决定模型如何看待错误。不同 Loss 不只是惩罚方式不同，还对应不同的预测目标和概率假设：
+
+| 数据与任务                           | 常用 Loss            | 对应解释                 |
+| ------------------------------------ | -------------------- | ------------------------ |
+| 连续值，误差近似 Gaussian            | MSE                  | 学习条件均值             |
+| 连续值，异常值较多或误差近似 Laplace | MAE                  | 学习条件中位数           |
+| 二分类，标签服从 Bernoulli           | Binary Cross-Entropy | 最大化二分类 Likelihood  |
+| 多分类，标签服从 Categorical         | Cross-Entropy        | 最大化真实类别的预测概率 |
+| 让模型分布接近目标分布               | KL Divergence        | 衡量两个概率分布的差异   |
+
 #### MAE
 
 L1 loss 也叫 Mean Absolute Error：
@@ -140,6 +166,8 @@ $$
 ---
 
 ## 3. Logistic Regression
+
+Logistic Regression 与 Linear Regression 都先计算 $w^\top x+b$。区别是 Linear Regression 直接输出连续值，Logistic Regression 使用 Sigmoid 将线性分数转换为正类概率。
 
 ### 模型与 Loss
 
@@ -203,6 +231,8 @@ $$
 
 ## 4. Logistic Regression 与 SVM
 
+两者都是常见的线性分类器，但优化目标不同：Logistic Regression 学习分类概率，SVM 寻找 Margin 较宽的分类边界。
+
 ### 目标函数
 
 Logistic Regression 使用 logistic loss，直接建模条件概率。线性 SVM 使用 hinge loss：
@@ -252,8 +282,6 @@ $$
 - Polynomial kernel：建模特征交互。
 - RBF kernel：常用非线性核，但大数据上计算贵，也需要调 $\gamma$。
 
-面试一句话：
-
 > Kernel trick 让 SVM 在隐式高维空间里找线性边界，从原空间看就是非线性边界。
 
 ### 追问：SVM 里的 $C$ 变大会怎样？
@@ -272,6 +300,8 @@ SVM 依赖 margin 和内积。如果一个特征尺度特别大，比如收入�
 ---
 
 ## 5. Decision Tree
+
+线性模型使用一个全局边界；Decision Tree 则反复切分特征空间，在不同区域使用不同规则，因此可以自然表达非线性和特征交互。
 
 ### 分类树如何选择分裂？
 
@@ -322,6 +352,12 @@ $$
 
 ## 6. K-Means
 
+从这一节开始进入无监督学习。K-Means、GMM 和 Hierarchical Clustering 都在没有标签时寻找数据结构，但它们对“什么算一个簇”有不同假设：
+
+- K-Means：离同一个中心点较近的样本属于一簇。
+- GMM：来自同一个概率分布成分的样本属于一簇。
+- Hierarchical Clustering：样本可以形成多层嵌套结构。
+
 ### 目标
 
 $$
@@ -360,20 +396,13 @@ $$
 
 说明数据可能没有清晰的簇数，或 KMeans 假设不合适。可以结合 silhouette score、gap statistic、业务解释性和下游任务指标，不要硬找一个“肘部”。
 
-### 追问：KMeans 对非球形簇怎么办？
-
-KMeans 偏好球形、尺度相近的簇。遇到长条形、环形、不同密度簇时，可以考虑：
-
-- GMM：允许椭圆形簇和 soft assignment。
-- DBSCAN：适合密度簇和噪声点。
-- Spectral clustering：适合复杂形状，但计算更贵。
-- 先做 embedding、kernel 或降维再聚类。
-
 ---
 
 ## 7. EM 算法
 
-EM 用于含 latent variable 或缺失变量的概率模型。设观测为 $X$、隐变量为 $Z$、参数为 $\theta$。
+K-Means 的簇分配是直接确定的，但 GMM 中“一个样本来自哪个 Gaussian”是看不见的 Latent Variable。EM 解决的正是这种“隐藏变量未知，模型参数也未知”的循环问题。
+
+EM 用于含 Latent Variable 或缺失变量的概率模型。设观测为 $X$、隐变量为 $Z$、参数为 $\theta$。
 
 ### E-Step
 
@@ -406,6 +435,8 @@ EM 可从 Jensen inequality / evidence lower bound 推导。标准条件下每�
 ---
 
 ## 8. GMM 与 K-Means
+
+GMM 可以看作 K-Means 的概率化版本：K-Means 将每个样本硬分给一个簇，GMM 则输出样本属于每个 Component 的概率。
 
 ### GMM
 
@@ -445,6 +476,8 @@ GMM 也有局限：需要选择 $K$ 和 covariance type；可能发生某个 cov
 
 ## 9. Random Forest
 
+这一节把 Decision Tree 与后面的 Ensemble Learning 连起来：单棵深树的主要问题是 Variance 高，而 Random Forest 通过训练许多低相关的树并取平均来降低 Variance。
+
 Random Forest 是很多棵决策树的 bagging ensemble：
 
 1. 对训练样本做 bootstrap sampling。
@@ -472,6 +505,8 @@ Random Forest 是很多棵决策树的 bagging ensemble：
 ---
 
 ## 10. Naive Bayes
+
+Naive Bayes 与 Logistic Regression 都能做分类，但思路不同：Logistic Regression 直接学习 $p(y\mid x)$，Naive Bayes 先建模 $p(x\mid y)$ 和 $p(y)$，再通过 Bayes Rule 得到类别后验概率。
 
 Naive Bayes 基于 Bayes rule：
 
@@ -502,6 +537,8 @@ Bag-of-words 特征高维稀疏，Naive Bayes 训练快、需要数据少。垃�
 
 ## 11. KNN
 
+KNN 与前面的模型不同：它几乎不进行参数训练，而是在预测时直接查找附近的训练样本，因此也叫 Instance-Based Learning。
+
 KNN 不显式训练参数。预测时找离测试点最近的 $K$ 个训练样本：
 
 - 分类：多数投票。
@@ -522,6 +559,8 @@ KNN 直接用距离找邻居。如果某个特征尺度特别大，距离几乎�
 ---
 
 ## 12. Ensemble、Bagging、Boosting 与 XGBoost
+
+前面的 Random Forest 是 Bagging 的代表。本节进一步比较 Bagging、Boosting 和 Stacking，解释树模型为什么可以通过不同组合方式获得更稳定或更准确的结果。
 
 ### Ensemble Learning
 
@@ -566,7 +605,7 @@ XGBoost 是高效的梯度提升树实现。它逐棵加树，每棵树拟合当
 
 ## 13. Hierarchical Clustering
 
-Hierarchical clustering 生成一棵层次聚类树，不需要一开始固定所有样本的硬分配。
+K-Means 和 GMM 直接给出某个 $K$ 下的聚类结果；Hierarchical Clustering 则生成一棵层次树，可以观察数据在不同粒度下如何合并。
 
 常见做法是 agglomerative：
 
@@ -594,36 +633,5 @@ Hierarchical clustering 生成一棵层次聚类树，不需要一开始固定�
 - Ward linkage 常用于数值特征，偏向紧凑球形簇。
 
 ---
-
-## 14. Association Rules
-
-Association rules 用于发现“买了 A 的人也常买 B”这类共现模式。
-
-规则形式：
-
-$$
-A\Rightarrow B
-$$
-
-常见指标：
-
-- **Support**：$A$ 和 $B$ 同时出现的比例。
-- **Confidence**：出现 $A$ 时也出现 $B$ 的概率。
-- **Lift**：比随机独立情况下强多少。
-
-$$
-\operatorname{lift}(A\Rightarrow B)
-=\frac{P(A,B)}{P(A)P(B)}
-$$
-
-Lift 大于 1 表示正相关。常见算法包括 Apriori 和 FP-Growth。
-
-### 追问：Association Rule 里 confidence 高就一定好吗？
-
-不一定。比如很多人都会买牛奶，那么“买面包 $\Rightarrow$ 买牛奶”的 confidence 可能高，但不代表面包真的增加买牛奶的概率。要看 lift：
-
-- lift $>1$：正相关。
-- lift $\approx1$：基本独立。
-- lift $<1$：负相关。
 
 [返回目录](README.md)
