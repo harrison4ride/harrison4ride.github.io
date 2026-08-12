@@ -4,136 +4,120 @@
 
 本章覆盖分类/回归指标、概率校准和模型比较。数据切分与交叉验证见 [03. 数据处理与实验方法](03-data-experiment.md)。
 
-## 1. 混淆矩阵与 Type I / Type II 错误
+## 1. 混淆矩阵、Precision、Recall、F1 与 Accuracy
 
-二分类混淆矩阵包含 TP、FP、TN、FN：
+### 混淆矩阵
 
-- **TP**：真实正，预测正。
-- **FP**：真实负，预测正。
-- **TN**：真实负，预测负。
-- **FN**：真实正，预测负。
+|          | 预测为正 | 预测为负 |
+| -------- | -------: | -------: |
+| 真实为正 |       TP |       FN |
+| 真实为负 |       FP |       TN |
 
-### Type I 与 Type II 错误
-
-- **Type I error（第一类错误，假阳性 FP）**：把负样本判成正，即“误报 / 假警报”。统计上是错误地拒绝了为真的原假设。
-- **Type II error（第二类错误，假阴性 FN）**：把正样本判成负，即“漏报”。统计上是错误地接受了为假的原假设。
-
-记忆法：Type I = False Positive = 误报；Type II = False Negative = 漏报。
-
-### 追问：两类错误哪个更严重？
-
-取决于业务成本。
-
-- 疾病筛查：漏诊（Type II / FN）后果严重，优先降低 FN，即提高 Recall。
-- 垃圾邮件拦截：误杀正常邮件（Type I / FP）代价高，优先降低 FP，即提高 Precision。
-
-阈值就是在两类错误之间做权衡，应由 FP/FN 的真实成本决定。
-
----
-
-## 2. Precision、Recall、F1 与 Accuracy
+### Accuracy
 
 $$
-Precision=\frac{TP}{TP+FP}
+Accuracy
+=
+\frac{TP+TN}
+{TP+FP+TN+FN}.
 $$
 
-$$
-Recall=\frac{TP}{TP+FN}
-$$
+Accuracy 回答的是：
 
-Precision：模型说是正样本的里面，有多少是真的。
+> 所有样本中，模型预测正确了多少？
 
-Recall：所有真实正样本里，模型找到了多少。
+### Precision
 
 $$
-F_1=\frac{2\cdot Precision\cdot Recall}{Precision+Recall}
+Precision
+=
+\frac{TP}{TP+FP}.
 $$
 
-F1 是 Precision 和 Recall 的调和平均数。只要其中一个很低，F1 就会低。它适合你想同时兼顾误报和漏报的场景。
+Precision 回答的是：
+
+> 模型预测为正的样本中，有多少是真的？
+
+### Recall
 
 $$
-Accuracy=\frac{TP+TN}{TP+FP+TN+FN}
+Recall
+=
+\frac{TP}{TP+FN}.
 $$
 
-### 类别不平衡时为什么不能只看 Accuracy？
+Recall 也叫 Sensitivity 或 True Positive Rate，回答的是：
 
-若正样本只占 1%，模型全部预测为负也有 99% Accuracy，但正类 Recall 为 0。此时应根据目标关注 Precision、Recall、F1、PR 曲线和 PR-AUC，并同时报告类别比例与阈值。
+> 所有真实正样本中，模型成功找到了多少？
 
-“不能用 Accuracy”可更准确地说成：**不能把 Accuracy 作为唯一主指标**。如果业务成本对称且同时报告分组结果，Accuracy 仍可作为辅助指标。
-
-如何在数据层面处理不平衡（重采样、类别权重、SMOTE 等），见 [03. 数据处理与实验方法](03-data-experiment.md)。
-
-### Precision 与 Recall
-
-- 垃圾邮件拦截：误杀正常邮件代价高，通常优先 Precision。
-- 疾病初筛：漏诊代价高，通常优先 Recall，再通过后续检查过滤假阳性。
-
-实际阈值应由 FP/FN 的业务成本、处理容量和风险约束共同决定，而不是机械地追求某个指标最大。
-
-### F1 的局限
-
-- 不考虑 TN。
-- 默认 Precision 和 Recall 同等重要。
-- 不评估概率校准。
-
-若业务更重视 Recall 或 Precision，可使用 $F_\beta$：
+### F1 Score
 
 $$
-F_\beta
-=(1+\beta^2)
-\frac{PR}{\beta^2P+R}
+F_1
+=
+\frac{2\cdot Precision\cdot Recall}
+{Precision+Recall}.
 $$
 
-$\beta>1$ 更重视 Recall，$\beta<1$ 更重视 Precision。
+也可以直接根据混淆矩阵计算：
 
-### 何时用 F1 而非 Accuracy？
+$$
+F_1
+=
+\frac{2TP}{2TP+FP+FN}.
+$$
 
-类别不平衡、或 FP/FN 代价不对称时，用 F1（或 $F_\beta$）比 Accuracy 更能反映模型对少数类的处理能力。
+F1 是 Precision 和 Recall 的调和平均。只有两者都较高时，F1 才会较高。
 
 ---
 
 ## 3. ROC-AUC 与 PR-AUC
 
-### ROC-AUC 如何解释？
+Precision、Recall 和 F1 都依赖某个固定阈值。ROC-AUC 和 PR-AUC 则通过改变阈值，评估模型在所有阈值下的整体表现。
 
-ROC-AUC 等于随机抽取一个正样本和一个负样本时，模型给正样本更高分的概率；若考虑并列分数，通常给 tie 计一半概率。
+### ROC Curve
 
-它衡量跨阈值的排序能力，与某个固定阈值无关。但在正类极少时，大量 TN 会让 ROC 曲线显得乐观，因此 PR-AUC 往往更有解释力。
-
-ROC 曲线的两个坐标为：
+ROC 曲线的横轴是 False Positive Rate：
 
 $$
-TPR=\frac{TP}{TP+FN}
+FPR
+=
+\frac{FP}{FP+TN}.
 $$
 
+纵轴是 True Positive Rate，也就是 Recall：
+
 $$
-FPR=\frac{FP}{FP+TN}
+TPR
+=
+\frac{TP}{TP+FN}.
 $$
 
-改变分类阈值会得到不同的 $(\operatorname{FPR},\operatorname{TPR})$ 点。AUC 高不代表某个业务阈值下 Precision、Recall 或校准一定好。
+从高到低改变分类阈值，会得到不同的：
 
-### 追问：ROC-AUC 什么时候会误导？
+$$
+(FPR,TPR)
+$$
 
-正样本极少时，ROC-AUC 可能看起来不错，但真正上线的 Precision 很低。欺诈检测、疾病筛查、异常检测更应看 PR-AUC、Precision、Recall 和固定处理容量下的业务收益。
+点，这些点组成 ROC 曲线。
 
-### PR-AUC
+### ROC-AUC
 
-PR-AUC 是 Precision-Recall 曲线下面的面积。
+ROC-AUC 是 ROC 曲线下面的面积。
 
-- 横轴：Recall。
-- 纵轴：Precision。
-- 改变分类阈值，会得到不同的 Precision/Recall 点。
+它也可以解释为：
 
-PR-AUC 越大，说明模型在不同阈值下都能保持较好的 Precision/Recall 平衡。它特别适合类别极度不平衡的任务，比如欺诈检测、疾病筛查、异常检测。
+> 随机抽取一个正样本和一个负样本，模型给正样本更高分的概率。
 
-注意：PR-AUC 对正样本比例敏感。随机模型的 PR-AUC baseline 约等于正样本比例。
+对于分数相同的情况，通常按一半概率计算。
 
-### F1 和 PR-AUC 的区别
+因此：
 
-- **F1**：某一个固定阈值下的 Precision 和 Recall 综合分数。
-- **PR-AUC**：所有阈值下 Precision-Recall 表现的整体面积。
+- ROC-AUC = 1：所有正样本都排在负样本前面。
+- ROC-AUC = 0.5：排序能力接近随机。
+- ROC-AUC < 0.5：排序方向可能反了。
 
-如果你已经确定业务阈值，可以看 F1、Precision、Recall。如果你还在比较模型整体排序能力，尤其是类别不平衡时，可以看 PR-AUC。
+ROC-AUC 只关心排序，不要求模型输出准确的概率。
 
 ---
 
@@ -166,18 +150,6 @@ $$
 ### 数值稳定的 Log Loss
 
 不要先显式计算 softmax/sigmoid 再取 log。使用 log-sum-exp 或框架的 `CrossEntropyLoss` / `BCEWithLogitsLoss`，避免概率下溢到 0 后出现 $\log 0$。
-
----
-
-## 5. 回归指标：MSE
-
-$$
-\operatorname{MSE}
-=\frac1N\sum_{i=1}^N
-(y_i-\hat y_i)^2
-$$
-
-常用于连续值回归，对大误差惩罚较强。它对应预测条件均值；在同方差高斯噪声假设下也对应负对数似然。
 
 ---
 

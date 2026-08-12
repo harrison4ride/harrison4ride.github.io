@@ -1,4 +1,4 @@
-# 02. NLP、RNN 与词向量
+# 04. NLP & RNN
 
 [返回目录](README.md)
 

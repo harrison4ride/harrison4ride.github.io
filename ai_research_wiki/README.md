@@ -2,13 +2,12 @@
 
 ## 第一部分：通用机器学习基础
 
-| 章节                                            | 内容                                                                                                                                 |
-| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| [00. 机器学习核心概念](00-ml-concepts.md)       | AI/ML/DL、机器学习三大类型、参数 vs 超参数、归纳 vs 演绎、Bias-Variance、过拟合/欠拟合、维度灾难                                     |
-| [01. 基础与神经网络机制](01-foundations.md)     | L1/L2 正则与 Weight Decay、Loss/Huber、防过拟合、梯度下降、反向传播、梯度消失、激活函数、Softmax、Dropout、Perceptron、CNN、迁移学习 |
-| [02. 模型评估与指标](02-evaluation.md)          | 混淆矩阵、Type I/II、Precision/Recall/F1、ROC-AUC/PR-AUC、Log Loss 与校准、模型比较与统计检验                                        |
-| [03. 数据处理与实验方法](03-data-experiment.md) | 验证集/测试集、交叉验证、缺失值、特征缩放、编码、Outlier、类别不平衡、数据泄漏、PCA                                                  |
-| [04. 经典机器学习](04-classical-ml.md)          | 线性/逻辑回归、MSE/KL、SVM、决策树、K-Means、EM、GMM、Random Forest、Naive Bayes、KNN、XGBoost                                       |
+| 章节                                        | 内容                                                                                                                                 |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| [00. 机器学习核心概念](00-ml-concepts.md)   | AI/ML/DL、机器学习三大类型、参数 vs 超参数、归纳 vs 演绎、Bias-Variance、过拟合/欠拟合、维度灾难                                     |
+| [01. 基础与神经网络机制](01-foundations.md) | L1/L2 正则与 Weight Decay、Loss/Huber、防过拟合、梯度下降、反向传播、梯度消失、激活函数、Softmax、Dropout、Perceptron、CNN、迁移学习 |
+| [02. 模型评估与指标](02-evaluation.md)      | 混淆矩阵、Type I/II、Precision/Recall/F1、ROC-AUC/PR-AUC、Log Loss 与校准、模型比较与统计检验                                        |
+| [04. 经典机器学习](04-classical-ml.md)      | 线性/逻辑回归、MSE/KL、SVM、决策树、K-Means、EM、GMM、Random Forest、Naive Bayes、KNN、XGBoost                                       |
 
 ## 第二部分：NLP 与大模型
 
@@ -21,10 +20,7 @@
 
 ## 第三部分：应用系统与工程
 
-| 章节                                                | 内容                                                                                                  |
-| --------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| [09. Agent](09-agent.md)                            | Agent 定义、Harness、ReAct、规划、Memory、Tool Use、多智能体、安全                                    |
-| [10. RAG 与搜索](10-rag-and-search.md)              | 完整流水线、切块、Embedding、混合检索、重排、GraphRAG、自适应 RAG、评估                               |
-| [11. 项目经验与 Production ML](11-production-ml.md) | 离线上线差异、NaN/Inf、Data Shift、有限标注、特征缺失、监控、A/B、Feature Store、时间序列验证、公平性 |
-| [12. ML Coding](12-ml-coding.md)                    | NumPy 手写 KMeans、Logistic/Linear Regression、Softmax、Attention、MHA、手写题检查清单                |
-| [参考资料](references.md)                           | 论文、官方文档与进一步阅读                                                                            |
+| 章节                             | 内容                                                                                   |
+| -------------------------------- | -------------------------------------------------------------------------------------- |
+| [12. ML Coding](12-ml-coding.md) | NumPy 手写 KMeans、Logistic/Linear Regression、Softmax、Attention、MHA、手写题检查清单 |
+| [参考资料](references.md)        | 论文、官方文档与进一步阅读                                                             |
