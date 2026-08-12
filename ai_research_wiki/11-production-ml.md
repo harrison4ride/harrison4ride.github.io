@@ -513,3 +513,5 @@ Train: [更长过去]   Val: [再未来一段]
 ### 追问：Fairness 指标冲突怎么办？
 
 不同公平性定义可能无法同时满足。例如 demographic parity 要求不同组通过率接近，equalized odds 要求错误率接近。实际要根据业务和法律风险选择主约束，并报告 trade-off。
+
+[返回目录](README.md)

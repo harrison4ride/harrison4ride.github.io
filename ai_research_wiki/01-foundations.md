@@ -2,13 +2,17 @@
 
 [返回目录](README.md)
 
-本章覆盖正则化、损失函数、优化、反向传播、激活函数等深度学习的“机制层”。概念性定义见 [00. 核心概念](00-ml-concepts.md)，评估指标见 [02. 模型评估与指标](02-evaluation.md)。
-
 ## 1. L1 与 L2 正则化
 
-### 30 秒回答
+### 为什么需要正则化？
 
-L1 和 L2 都是在原本的 loss 后面加一个“惩罚项”，目的都是不让模型权重太夸张，从而减少过拟合。
+模型出现 Overfitting, 从 Bias-Variance 的角度看，这通常意味着模型的 **Variance 过高**：模型对训练数据过于敏感，学到了训练集中的噪声或偶然规律。
+
+正则化的基本思路是：
+
+> 在拟合训练数据的同时，限制模型参数不要变得过于极端。
+
+L1 和 L2 都是在原本的 loss 后面加一个“惩罚项”，目的都是不让模型权重太夸张，正则化本质上是在 **降低 Variance**，但也可能带来更高的 **Bias**。
 
 $$
 \mathcal L_{\text{L1}}
@@ -20,111 +24,134 @@ $$
 =\mathcal L_{\text{data}}+\lambda\sum_i w_i^2
 $$
 
-最重要的区别：
+| 对比           | L1                  | L2                     |
+| -------------- | ------------------- | ---------------------- |
+| 惩罚方式       | 权重绝对值          | 权重平方               |
+| 对小权重的效果 | 持续向 0 推         | 越接近 0，推力越小     |
+| 最终结果       | 容易产生大量 0 权重 | 通常只把权重变小       |
+| 主要作用       | 稀疏化、特征选择    | 限制大权重、提高稳定性 |
+| 常见场景       | 高维稀疏特征        | 线性模型和神经网络     |
 
-- **L1 更像“砍掉不重要特征”**：它容易把一些权重直接变成 0。
-- **L2 更像“让所有权重都别太大”**：它通常把权重变小，但很少让权重刚好等于 0。
+简单来说：
 
-所以：
+- **L1 更像删除不重要的特征。**
+- **L2 更像让模型不要过度依赖某些特征。**
 
-- 想做特征选择、希望模型更稀疏：用 L1。
-- 大多数特征都有点用，只是不想某些权重特别大：用 L2。
-- 不确定，或者既想稀疏又想稳定：用 Elastic Net，也就是 L1 + L2。
+### 为什么 L1 会产生稀疏权重？
 
-### L1 惩罚真的比 L2 弱吗？
-
-不能这么说。**L1 和 L2 谁惩罚更强，取决于权重 $w$ 有多大。**
-
-| $w$ | L1: $|w|$ | L2: $w^2$ |
-| --- | ---: | ---: |
-| 0.1 | 0.1 | 0.01 |
-| 1 | 1 | 1 |
-| 10 | 10 | 100 |
-
-结论：
-
-- 当 $|w|>1$，L2 惩罚更强，因为平方会把大权重放大。
-- 当 $0<|w|<1$，L1 反而更强，因为 $|w| > w^2$。
-
-所以 L2 对“大权重”打得更狠；L1 对“小权重”也会持续往 0 推。
-
-### 为什么 L1 更容易让权重变成 0？
-
-看梯度最直观。
-
-L1 的惩罚是：
+L1 的惩罚项是：
 
 $$
-|w|
+|w|.
 $$
 
-它的梯度大致是：
+当 $w\neq 0$ 时，它对权重的影响大致为：
 
 $$
-\operatorname{sign}(w)
+\frac{\partial |w|}{\partial w}
+=
+\operatorname{sign}(w).
 $$
 
-意思是：只要 $w$ 不是 0，L1 都用差不多固定的力度把它往 0 推。
+这意味着，只要权重还没有变成 0，L1 就会用近似固定的力度把它向 0 推。
 
-L2 的惩罚是：
+此外，$|w|$ 在 $w=0$ 的位置有一个尖点。使用适合 L1 的优化方法时，一个较小且不重要的权重到达 0 后，可以直接保留在 0。
 
-$$
-w^2
-$$
-
-它的梯度是：
+因此，L1 容易得到这样的结果：
 
 $$
-2w
+w=[1.2,\;0,\;0,\;-0.7,\;0].
 $$
 
-当 $w$ 很小，比如 $w=0.001$，L2 的梯度只有 $0.002$，推力也很小。所以 L2 更像是“慢慢缩小权重”，而不是直接把它清零。
+这相当于模型只保留少数有用特征，因此 L1 也可以用于自动 Feature Selection。
 
-一句话：
+### 为什么 L2 通常只缩小权重？
 
-> **L1 会把不重要的权重清成 0；L2 会把权重整体压小，但通常保留它们。**
-
-### 什么时候用 L1，什么时候用 L2？
-
-#### 用 L1 的场景
-
-- 特征特别多，但你觉得真正有用的只有一小部分。
-- 你想让模型自动做 feature selection。
-- 你希望模型更容易解释，因为很多特征权重会变成 0。
-- 例子：文本 bag-of-words、one-hot 高维稀疏特征、广告/推荐里的大量类别特征。
-
-#### 用 L2 的场景
-
-- 你觉得大多数特征都有一点用，不想直接删掉。
-- 特征之间相关性强，想让模型更稳定。
-- 你主要担心某些权重过大导致过拟合。
-- 例子：线性回归、逻辑回归、神经网络里的 weight decay。
-
-#### 用 Elastic Net 的场景
-
-Elastic Net = L1 + L2：
+L2 的惩罚项是：
 
 $$
-\lambda_1\|w\|_1+\lambda_2\|w\|_2^2
+\frac{1}{2}w^2.
 $$
 
-它适合：
+它对权重的梯度是：
 
-- 特征很多。
-- 特征之间还有相关性。
-- 你既想要 L1 的稀疏性，又想要 L2 的稳定性。
+$$
+\frac{\partial \frac{1}{2}w^2}{\partial w}
+=
+w.
+$$
 
-### 面试怎么说？
+权重越大，L2 把它向 0 拉的力度越大；权重越小，这个力度也越小。
 
-可以这样回答：
+例如：
 
-> L1 和 L2 都是为了防止权重太大、减少过拟合。L1 用绝对值惩罚，容易把小权重压成 0，所以适合做特征选择；L2 用平方惩罚，对大权重惩罚特别强，所以更适合让模型整体更平滑、更稳定。不是简单说 L1 比 L2 惩罚弱，因为小权重时 L1 反而比 L2 强，大权重时 L2 更强。
+- 当 $w=10$ 时，L2 会产生很强的限制；
+- 当 $w=0.001$ 时，L2 的影响已经非常小。
+
+所以 L2 更容易得到这样的结果：
+
+$$
+w=[0.8,\;0.02,\;-0.01,\;-0.5,\;0.03].
+$$
+
+大权重被明显压小，但小权重通常不会刚好变成 0。因此，L2 主要用于控制权重大小，而不是删除特征。
+
+### 什么时候使用 L1？
+
+L1 适合“特征很多，但真正有用的可能只有少数几个”的情况，例如：
+
+- 文本中的 Bag-of-Words 特征；
+- 大量 One-Hot 类别特征；
+- 高维广告或推荐系统特征；
+- 希望模型能够自动选择特征；
+- 希望模型更加稀疏、容易解释。
+
+例如，一个线性模型原本使用 10,000 个特征。加入 L1 后，可能只有几百个特征的权重不为 0。
+
+但如果多个特征高度相关，L1 可能只保留其中一个，并将其他相关特征设为 0。更换训练数据后，它选择的特征也可能发生变化。
+
+### 什么时候使用 L2？
+
+L2 适合“大多数特征都有一定作用，但不希望某些权重过大”的情况，例如：
+
+- 线性回归；
+- 逻辑回归；
+- 特征之间存在较强相关性；
+- 神经网络训练；
+- 主要目标是提高模型稳定性，而不是删除特征。
+
+当多个特征高度相关时，L2 通常会把权重分配给多个相关特征，而不是只保留其中一个。因此，它的结果通常比 L1 更稳定。
+
+### 什么时候使用 Elastic Net？
+
+如果特征很多，而且特征之间还存在较强相关性，可以结合 L1 和 L2：
+
+$$
+\mathcal L
+=
+\mathcal L_{\text{data}}
++
+\lambda_1\sum_i|w_i|
++
+\frac{\lambda_2}{2}\sum_iw_i^2.
+$$
+
+这就是 Elastic Net。
+
+它同时具有：
+
+- L1 的稀疏性，可以删除不重要的特征；
+- L2 的稳定性，可以处理相互关联的特征。
+
+因此，可以这样选择：
+
+- 希望获得稀疏模型或自动选择特征：优先考虑 L1；
+- 希望限制大权重并提高稳定性：优先考虑 L2；
+- 既希望选择特征，又存在大量相关特征：考虑 Elastic Net。
 
 ### Weight Decay 是什么？
 
-Weight decay 可以直观理解成：
-
-> 每次更新参数时，顺手把权重往 0 拉一点点。
+> 每次更新参数时，除了根据 Loss 更新权重，还额外把权重向 0 缩小一点。
 
 普通梯度下降大概是：
 
@@ -152,26 +179,26 @@ $$
 
 ### Weight Decay 和 L2 是一回事吗？
 
-在 **普通 SGD** 里，L2 regularization 和 weight decay 基本等价。
+> 在普通 SGD 中，L2 Regularization 和 Weight Decay 基本等价。
 
-也就是说，把 L2 加进 loss：
+### 为什么 Adam 中更常使用 AdamW？
 
-$$
-\mathcal L = \mathcal L_{\text{data}}+\lambda\sum_i w_i^2
-$$
+在 Adam 中，L2 产生的梯度也会经过 Adam 的动量计算和自适应缩放。因此，不同参数受到的实际衰减程度可能不同。
 
-最后产生的效果就像每次更新时让权重衰减一点。
+AdamW 将 Weight Decay 与 Loss 的梯度更新分开：
 
-但是在 **Adam / AdamW** 这类自适应优化器里，要小心：
+1. Adam 根据 Loss 的梯度更新参数；
+2. Weight Decay 单独把参数缩小一点。
 
-- Adam + L2：L2 的梯度会进入 Adam 的动量和自适应缩放里。
-- AdamW：直接把 weight decay 和梯度更新分开做，更接近“每次把权重乘小一点”这个直觉。
+因此，AdamW 更符合“每次更新时让权重衰减一点”的定义，也更容易单独控制正则化强度。
 
-所以现在训练神经网络时，很多人更常用 **AdamW**，而不是 Adam + L2。
+简单来说：
 
-面试一句话：
+- **SGD + L2**：通常等价于 Weight Decay；
+- **Adam + L2**：不完全等价于 Weight Decay；
+- **AdamW**：将 Weight Decay 与梯度更新分开处理。
 
-> Weight decay 就是每次参数更新时，把权重往 0 缩一点，防止权重过大。在 SGD 里它和 L2 正则基本等价，但在 Adam 里不完全等价，所以常用 AdamW 做 decoupled weight decay。
+这也是神经网络训练中经常使用 AdamW 的原因之一。
 
 ### 为什么常用 L1/L2，而较少使用 L3/L4？
 
@@ -179,507 +206,1035 @@ $$
 - $p>2$ 的 $L_p$ 惩罚会更强地惩罚大权重，但通常没有 L1 的稀疏性，也缺少 L2 的统计、数值和解析便利。
 - $0<p<1$ 更接近直接计算非零参数个数，但非凸，优化更困难。
 
-这并不意味着 L3/L4 “不能用”。正则项应由先验和目标决定，例如 group lasso、nuclear norm、total variation 都适合特定结构。
-
 ---
 
-## 2. L1 / L2 / L3 Loss
+## 2. BatchNorm 与 LayerNorm
 
-先分清楚：
+上一节的 L1、L2 是在 Loss 中直接限制模型权重，属于显式正则化。BatchNorm 和 LayerNorm 则作用于网络的中间激活值，主要目的是改善训练过程。
+- **L1/L2**：限制模型参数，主要用于控制 Overfitting。
+- **BatchNorm/LayerNorm**：调整激活值的分布，主要用于稳定优化。
+- BatchNorm 可能附带一定正则效果，但这不是它的主要目的。
 
-- **Loss**：惩罚预测错了多少，比如 $\hat y$ 和 $y$ 差多远。
-- **Regularization**：惩罚模型权重多大，比如 $w$ 多大。
+### BatchNorm
 
-它们名字都叫 L1/L2，但对象不一样。
-
-### L1 Loss：MAE
-
-L1 loss 也叫 Mean Absolute Error：
+BatchNorm 对同一个 mini-batch 中、同一特征或通道的激活值进行标准化：
 
 $$
-L_1=\frac1n\sum_i |y_i-\hat y_i|
+\hat{x}
+=
+\frac{x-\mu_{\text{batch}}}
+{\sqrt{\sigma_{\text{batch}}^2+\epsilon}},
+\qquad
+y=\gamma\hat{x}+\beta.
 $$
 
-特点：
+其中：
 
-- 对异常值没那么敏感。
-- 误差从 10 变 100，惩罚也只是线性变大。
-- 缺点是在误差为 0 的地方不光滑，优化时可能没 MSE 顺。
+- $\mu_{\text{batch}}$ 和 $\sigma_{\text{batch}}^2$ 是当前 batch 的均值和方差；
+- $\epsilon$ 用于防止除以 0；
+- $\gamma$ 和 $\beta$ 是可学习参数，让模型可以重新调整激活值的范围。
 
-适合：数据里有 outlier，或者你不想让少数极端误差主导训练。
+BatchNorm 的主要作用是让训练更加稳定，通常允许使用更大的学习率，并降低模型对参数初始化的敏感程度。由于每个 batch 的统计量存在随机变化，它也会带来一些类似正则化的噪声，但这种效果只是副作用。
 
-### L2 Loss：MSE
+### BatchNorm 为什么有助于训练？
 
-L2 loss 也叫 Mean Squared Error：
+如果不同层的激活值尺度差异很大，某些方向的梯度可能特别大，另一些方向则特别小，模型会更难优化。
 
-$$
-L_2=\frac1n\sum_i (y_i-\hat y_i)^2
-$$
+BatchNorm 将激活值调整到相对稳定的范围，因此通常可以：
 
-特点：
+- 减少不同层之间的数值尺度差异；
+- 让梯度更新更加稳定；
+- 使用更大的 Learning Rate；
+- 加快模型收敛；
+- 降低对参数初始化的敏感程度。
 
-- 对大误差惩罚很重。
-- 误差从 10 变 100，惩罚从 100 变 10000。
-- 光滑，好优化。
-- 缺点是对 outlier 敏感。
-
-适合：普通回归问题，尤其假设误差接近高斯分布时。
-
-### L3 Loss 是什么？
-
-如果直接写：
-
-$$
-\sum_i (y_i-\hat y_i)^3
-$$
-
-这通常不是好 loss，因为误差有正有负，三次方也有正有负，可能互相抵消，loss 甚至可能越小越奇怪。
-
-如果写成绝对值三次：
-
-$$
-\sum_i |y_i-\hat y_i|^3
-$$
-
-它会比 MSE 更狠地惩罚大误差。
-
-但 L3 loss 很少作为默认选择，因为：
-
-- 对 outlier 更敏感。
-- 大误差梯度更容易爆。
-- 实际上 MSE、MAE、Huber loss 已经覆盖了大多数需求。
-
-### Huber Loss：MAE 和 MSE 的折中
-
-Huber loss 小误差像 MSE，大误差像 MAE：
-
-$$
-L_\delta(e)=
-\begin{cases}
-\frac12 e^2, & |e|\le \delta\\
-\delta(|e|-\frac12\delta), & |e|>\delta
-\end{cases}
-$$
-
-其中 $e=y-\hat y$。
-
-它适合：你希望小误差处好优化，同时又不想被 outlier 影响太大。
-
-### 面试怎么说？
-
-> L1/L2 loss 是在惩罚预测误差，L1 是绝对误差 MAE，抗 outlier；L2 是平方误差 MSE，对大误差惩罚更重，优化更平滑。L3 loss 不常用，直接三次方会有正负抵消，绝对值三次又太受 outlier 影响。实际常用 MAE、MSE 或 Huber。
-
-> MSE、KL Divergence 与 Cross-Entropy 三者的关系，见 [04. 经典机器学习](04-classical-ml.md) 的对应小节。
-
----
-
-## 3. 防止过拟合的方法
-
-### 数据
-
-- 收集更多有代表性的数据。
-- Data augmentation。
-- 去重、纠正标签噪声，避免 train/test leakage。
-
-### 模型
-
-- 降低容量。
-- L1/L2、weight decay。
-- Dropout、stochastic depth。
-- 参数共享或预训练后进行受限微调。
-
-### 训练
-
-- Early stopping。
-- 学习率和训练轮数控制。
-- Label smoothing。
-- 交叉验证和可靠的 validation split。
-
-交叉验证本身不直接约束模型参数，不属于正则项；它通过更可靠地选择模型、超参数和停止点，降低因验证集偶然性造成的过拟合。
+因此，BatchNorm 首先是一种优化方法，而不是专门的防止 Overfitting 方法。
 
 ### BatchNorm 是否属于正则化？
 
-**先说它做什么**：对一个 mini-batch 内、每个特征/通道在 batch 维度做标准化，再用可学习的 $\gamma, \beta$ 放缩平移：
+BatchNorm 不属于 L1、L2 这种显式正则化，但可能产生隐式正则效果。
+
+训练时，每个样本的标准化结果依赖当前 batch 中的其他样本。由于 mini-batch 是随机采样的，不同 batch 的均值和方差会有所不同，相当于给激活值加入了一些随机扰动。
+
+这种扰动可能让模型减少对训练样本细节的依赖，因此有时能够缓解 Overfitting。
+
+> BatchNorm 的主要作用是改善优化，正则化只是由 batch 统计噪声带来的附带效果。不能因为模型使用了 BatchNorm，就默认不再需要 Weight Decay、数据增强或其他正则化方法。
+
+### BatchNorm 与 LayerNorm
+
+两者的核心区别是：
+
+> BatchNorm 在不同样本之间统计同一特征；LayerNorm 在单个样本内部统计不同特征。
+
+| 对比                        | BatchNorm                     | LayerNorm                         |
+| --------------------------- | ----------------------------- | --------------------------------- |
+| 统计范围                    | 同一 batch 中的同一特征或通道 | 单个样本或 token 内的所有隐藏特征 |
+| 是否依赖 Batch Size         | 是                            | 否                                |
+| 训练与推理                  | 使用不同统计量                | 计算方式一致                      |
+| 是否需要 Running Statistics | 需要                          | 不需要                            |
+| 小 Batch 下的表现           | 可能不稳定                    | 通常不受影响                      |
+| 常见场景                    | CNN、计算机视觉               | Transformer、LLM、NLP             |
+| 隐式正则效果                | 可能有                        | 通常较弱                          |
+
+假设一个 batch 可以表示为一个矩阵，其中行是样本、列是特征：
+
+- BatchNorm 可以理解为沿列计算：比较不同样本的同一个特征。
+- LayerNorm 可以理解为沿行计算：比较一个样本内部的不同特征。
+
+对于 CNN，BatchNorm 通常还会同时使用空间位置上的数据，为每个通道计算统计量。
+
+### 为什么 Transformer 通常使用 LayerNorm？
+
+Transformer 的输入通常表示为：
 
 $$
-\hat x=\frac{x-\mu_{\text{batch}}}{\sqrt{\sigma_{\text{batch}}^2+\epsilon}},\qquad y=\gamma\hat x+\beta
+[\text{batch},\ \text{sequence length},\ \text{hidden dimension}].
 $$
 
-它的首要作用是**优化**：平滑 loss 曲面、允许更大学习率、加速并稳定训练，降低对初始化的敏感度。
+LayerNorm 对每个 token 的 Hidden Dimension 独立进行归一化，因此：
 
-**算不算正则化？** 算「隐式/附带」正则，但不是正经的正则化方法：
+- 不依赖 Batch Size；
+- 不需要不同样本具有相同的序列长度；
+- 训练和自回归推理的计算方式一致；
+- 即使一次只生成一个 token，也可以正常工作。
 
-- **为什么有正则效果**：每个样本的归一化依赖同一 batch 里的其他样本，而 batch 是随机采样的，统计量 $\mu, \sigma$ 带噪 → 相当于给激活注入随机扰动（机制上类似 Dropout）。用了 BN 后常可减弱甚至去掉 Dropout。
-- **但本质是优化技巧**：正则只是副产品；不应把它当作通用防过拟合方法。
-- 正则强度随 batch 变化：batch 越小统计越抖、正则越强（也越不稳）。小 batch、序列模型或分布漂移时这种效果不可靠。
-- **训练/推理不一致**：训练用当前 batch 统计量，推理用训练期间维护的滑动平均（running mean/var）。
+BatchNorm 则依赖 batch 中其他样本的统计量。在小 batch、变长序列和自回归生成场景中，这些统计量不够方便和稳定。
 
-> 面试一句话：BatchNorm 首要是优化技巧、不是防过拟合方法，但因依赖 batch 统计噪声而带有隐式正则的副作用。
+因此：
 
-### BatchNorm vs LayerNorm
+- CNN 通常更常使用 BatchNorm；
+- Transformer 和 LLM 通常更常使用 LayerNorm 或 RMSNorm。
 
-核心区别只有一句：**沿哪个维度算均值和方差。**
+### Batch Size 如何影响 BatchNorm？
 
-| | BatchNorm | LayerNorm |
-| --- | --- | --- |
-| 归一化维度 | 跨**样本**（batch 维），每个特征独立 | 跨**特征**（单样本内），每个样本独立 |
-| 依赖 batch | 是，统计量来自整个 batch | 否，batch size = 1 也行 |
-| 训练/推理 | 不一致，需 running mean/var | 完全一致，无需滑动统计 |
-| 小 batch / 变长序列 | 差、不稳 | 不受影响 |
-| 典型场景 | CNN / 视觉 | Transformer / RNN / NLP |
-| 正则副作用 | 有（batch 噪声） | 基本没有 |
+Batch Size 越小，用于估计均值和方差的样本越少：
 
-形象地说（行 = 样本、列 = 特征）：**BN 竖着归一化**（看一列特征在整个 batch 上的分布），**LN 横着归一化**（看一个样本自己所有特征的分布）。Transformer 用 LN，是因为序列变长、batch 内长度不齐会让 BN 统计量不稳，且自回归推理常一次只来一个 token，而 LN 与 batch 无关、训练推理一致，天然合适。
+- 统计量的随机性更大；
+- 可能带来更强的隐式正则效果；
+- 但统计量也可能不准确，导致训练不稳定。
+
+Batch Size 越大：
+
+- Batch Statistics 更稳定；
+- BatchNorm 的随机扰动更小；
+- 附带的正则效果可能减弱。
+
+如果由于显存限制只能使用很小的 batch，可以考虑：
+
+- LayerNorm；
+- GroupNorm；
+- 在多张 GPU 之间同步统计量的 SyncBatchNorm。
 
 ---
 
-## 4. 梯度下降的类型
+## 3. Batch Size、梯度下降与 Optimizer
 
-- **Batch GD**：每步用全量数据，稳定但慢。
-- **SGD**：每步用一个样本，噪声大但更新快。
-- **Mini-batch GD**：每步用一小批样本，深度学习最常用。
+模型训练的目标是找到一组参数，使整个训练集上的平均 Loss 最小。不同梯度下降方法的区别是：
 
-Batch size 太小，梯度噪声大；太大，显存高、泛化和优化也可能变差。
+> 每次更新参数时，使用多少训练样本来估计梯度。
 
-### 追问：Mini-batch size 会影响什么？
+### 三种梯度下降
 
-- 小 batch：梯度噪声大，**常泛化更好**，但训练不稳定、吞吐低。
-- 大 batch：吞吐高、梯度稳，但显存大，且不调学习率时易掉进尖锐极小值、泛化变差，常需 learning-rate warmup 和调参。
+#### Batch Gradient Descent
 
-不要只说“大 batch 更快”，还要提优化稳定性和泛化。
+每一步都使用完整训练集计算梯度。
 
-### 为什么小 batch 往往泛化更好？
+优点：
 
-一句话：**小 batch 的梯度噪声大，相当于隐式正则，把模型推向「平坦极小值」，对训练/测试分布的偏移更鲁棒。**
+- 梯度准确、稳定；
+- 相同参数下每次得到的梯度相同。
 
-- **噪声即正则**：batch 估计的梯度是对全量梯度的带噪估计，噪声协方差 $\propto 1/\text{batch}$。batch 越小越抖，SGD 在 loss 曲面上带噪游走，类似给参数加扰动 → 抑制过拟合。
-- **平坦 vs 尖锐极小值**（Keskar et al. 2016）：大 batch 易收敛到**尖锐极小值**（曲率大、对扰动敏感），泛化差；小 batch 因噪声落在**平坦极小值**（周围一片低 loss），train/test 曲面有轻微错位时 loss 也不易暴涨 → 泛化稳。
-- **关键纠正——真正起作用的是「噪声尺度」而非 batch 本身**：噪声尺度 $\approx \text{lr}/\text{batch}$。所以「小 batch 泛化好」一部分是因为加大 batch 时没同步加大学习率。**线性缩放法则**（Goyal et al. 2017）：batch 扩大 $k$ 倍、学习率也乘 $k$（配 warmup），大 batch 能补回大部分泛化差距。
+缺点：
 
-### 那 batch=1 岂不是泛化最好？
+- 数据量大时计算很慢；
+- 每次更新都需要遍历完整数据集；
+- 很难充分利用频繁更新带来的优化速度。
 
-不会——泛化与 batch 的关系是**倒 U**，不是单调下降，batch=1 在另一端噪声过头：
+#### Stochastic Gradient Descent
 
-- **过量噪声会破坏收敛本身**：噪声当正则的前提是「还能收敛到低训练 loss，只在低 loss 解里挑平坦的」。batch=1 抖到到不了低 loss 区，直接**欠拟合**，train/test 一起变差——这不是泛化好，是优化坏了。
-- **噪声尺度反噬**：为了训得动必须把学习率调得很小，于是噪声尺度 $\text{lr}/\text{batch}$ 又被拉回来，想要的那点正则没了，还换来极慢收敛——「最大正则」和「能收敛」无法兼得。
-- **BN 失效 + 算力浪费**：1 个样本算不出有意义的方差（=0），BatchNorm 不可用；且用不上 GPU 并行，墙钟极慢。
+每一步只使用一个样本计算梯度。
 
-经验甜点区：视觉常 **2–32**，大模型/任务常 **32–512**——小，但几乎不是 1。
+优点：
 
-### 追问：SGD、Momentum、Adam 怎么选？
+- 参数更新频繁；
+- 单次更新计算量小；
+- 梯度噪声可能带来一定隐式正则效果。
 
-- **SGD(+Momentum)**：泛化常更好，是 CV 里很多 SOTA 的选择，但对学习率敏感、收敛慢。
-- **Adam / AdamW**：自适应学习率，收敛快、对学习率不那么敏感，是 Transformer/LLM 训练的默认。AdamW 把 weight decay 解耦，更稳。
-- 经验：大模型语言任务用 AdamW；追求极致泛化且能精调学习率时用 SGD+Momentum。
+缺点：
+
+- 梯度波动很大；
+- 通常需要更小的学习率；
+- 难以充分发挥 GPU 的并行计算能力。
+
+#### Mini-batch Gradient Descent
+
+每一步使用一小批样本计算梯度，是深度学习中最常见的方法。
+
+它在两方面取得平衡：
+
+- 比单样本 SGD 的梯度更稳定；
+- 比完整 Batch GD 的更新更频繁、计算成本更低；
+- 可以利用 GPU 对矩阵运算进行并行加速。
+
+实际深度学习中常说的“SGD 训练”，通常使用的也是 Mini-batch SGD，而不是每次只使用一个样本。
+
+### Batch Size 会影响什么？
+
+Batch Size 不只是决定一次放多少数据，还会同时影响：
+
+1. **梯度噪声**：Batch 越小，梯度估计的随机性通常越大。
+2. **更新次数**：在相同 Epoch 数下，Batch 越大，每个 Epoch 的参数更新次数越少。
+3. **显存使用**：Batch 越大，通常需要更多显存。
+4. **硬件吞吐**：在一定范围内，Batch 越大越容易发挥 GPU 并行能力。
+5. **泛化能力**：适量的梯度噪声有时可以减少 Overfitting。
+6. **BatchNorm 统计量**：Batch 越小，BatchNorm 的均值和方差越不稳定。
+
+因此，比较不同 Batch Size 时，不能只比较相同的 Epoch 数。因为 Batch Size 改变后，参数更新次数也发生了变化。
+
+### Learning Rate 为什么要和 Batch Size 一起调整？
+
+Batch Size 增大后，梯度通常更稳定，但每个 Epoch 的更新次数更少。如果仍然使用原来的 Learning Rate，模型的训练行为会发生明显变化。
+
+常见经验是线性缩放：
+
+$$
+B_{\text{new}}=kB_{\text{old}}
+\quad\Rightarrow\quad
+\eta_{\text{new}}\approx k\eta_{\text{old}}.
+$$
+
+也就是 Batch Size 扩大 $k$ 倍时，Learning Rate 也尝试扩大 $k$ 倍。
+
+但这只是起始调参规则，不是严格定律。Learning Rate 过大时，训练初期可能不稳定，因此大 Batch 训练通常还会配合 Learning Rate Warmup。
+
+可以把 Batch Size 和 Learning Rate 的关系粗略理解为：
+
+$$
+\text{Gradient Noise Scale}
+\propto
+\frac{\text{Learning Rate}}{\text{Batch Size}}.
+$$
+
+因此，改变 Batch Size 时，通常也需要重新调整 Learning Rate 和训练步数。
+
+### Batch Size 等于 1 是否泛化最好？
+
+不一定。梯度噪声只有在模型能够正常收敛的情况下，才可能产生有益的正则效果。
+
+Batch Size 等于 1 时：
+
+- 梯度的随机性很大；
+- 训练可能需要较小的 Learning Rate；
+- GPU 并行利用率很低；
+- 训练时间通常更长；
+- 普通 BatchNorm 的统计量可能不可靠。
+
+但 Batch Size 等于 1 并不是一定无法训练。在线学习、强化学习或某些小模型中也会使用单样本更新。
+
+正确结论是：
+
+> Batch Size 不是越小越好，而是在优化稳定性、泛化能力、显存和训练速度之间进行权衡。
+
+不存在适用于所有任务的最佳 Batch Size。通常先根据显存和硬件效率选择可行范围，再通过验证集比较不同设置。
+
+### Gradient Accumulation 是什么？
+
+当显存无法容纳较大的 batch 时，可以连续计算多个小 batch 的梯度，累积后再更新一次参数。
+
+如果：
+
+- 每张 GPU 的 Micro-batch Size 为 $B$；
+- 使用 $N$ 张 GPU；
+- 累积 $K$ 步后更新参数；
+
+那么 Effective Batch Size 为：
+
+$$
+B_{\text{effective}}
+=
+B\times N\times K.
+$$
+
+Gradient Accumulation 可以在较少显存下模拟大 Batch 的梯度更新，但需要注意：
+
+- 梯度噪声主要由 Effective Batch Size 决定；
+- BatchNorm 统计量通常只根据当前 Micro-batch 计算；
+- 因此，Gradient Accumulation 不能让 BatchNorm 获得更大的统计 batch。
+
+这也是小 Micro-batch 场景中 LayerNorm 和 GroupNorm 更稳定的原因之一。
+
+### SGD、Momentum、Adam 和 AdamW
+
+Batch Size 决定“使用多少样本估计梯度”，Optimizer 决定“如何使用这个梯度更新参数”。它们是两个不同的选择。
+
+| Optimizer      | 核心特点                     | 优点                             | 缺点                                | 常见场景                       |
+| -------------- | ---------------------------- | -------------------------------- | ----------------------------------- | ------------------------------ |
+| SGD            | 直接沿梯度方向更新           | 简单、内存开销小                 | 对 Learning Rate 敏感，收敛可能较慢 | 简单模型                       |
+| SGD + Momentum | 累积过去的更新方向           | 减少震荡、加快收敛               | 通常需要仔细调整 Learning Rate      | CNN、视觉任务                  |
+| Adam           | 为不同参数调整更新大小       | 前期收敛快，适合稀疏或不均匀梯度 | Weight Decay 处理不够直接           | NLP、复杂模型                  |
+| AdamW          | Adam 加上独立的 Weight Decay | 收敛快，正则化更容易控制         | 内存开销通常高于 SGD                | Transformer、LLM、现代深度网络 |
+
+Momentum 可以理解为给梯度更新加入“惯性”：
+
+- 如果多个步骤的梯度方向一致，就加速前进；
+- 如果梯度方向反复变化，就减少来回震荡。
+
+Adam 除了使用 Momentum，还会根据每个参数过去的梯度大小，分别调整其更新步长。
+
+AdamW 则进一步将 Weight Decay 从梯度计算中分离，使它更符合“每次更新时直接缩小权重”的定义。
+
+### 应该如何选择？
+
+没有一个 Optimizer 在所有任务上都最好，可以按照以下经验开始：
+
+- Transformer、LLM 和大多数 NLP 任务：通常从 AdamW 开始。
+- CNN 或传统视觉任务：可以比较 SGD + Momentum 和 AdamW。
+- 梯度非常稀疏或不同参数尺度差异较大：Adam/AdamW 通常更容易训练。
+- 追求更高泛化性能时：应该在相同计算预算下实际比较，而不能默认 SGD 一定优于 AdamW。
+
+选择 Batch Size 和 Optimizer 后，还需要一起调整：
+
+- Learning Rate；
+- Learning Rate Schedule；
+- Warmup；
+- Weight Decay；
+- 训练步数。
+
+这些参数共同决定模型能否收敛以及最终的泛化能力，不能完全独立调节。
 
 ---
 
 ## 5. 反向传播
 
-反向传播是链式法则在计算图上的高效实现。若：
+神经网络的一次训练包含四个步骤：
+
+1. **Forward Pass**：根据输入和当前参数计算预测。
+2. **Loss**：比较预测和真实标签。
+3. **Backpropagation**：计算每个参数对 Loss 的影响。
+4. **Optimizer Step**：使用梯度更新参数。
+
+因此，反向传播负责回答：
+
+> 如果某个参数发生一点变化，最终的 Loss 会变化多少？
+
+### 30 秒回答
+
+反向传播是链式法则在计算图上的高效实现。
+
+假设：
 
 $$
-z=f(x),\qquad y=g(z),\qquad \mathcal L=h(y)
+z=f(x),\qquad y=g(z),\qquad \mathcal L=h(y),
 $$
 
-则：
+那么：
 
 $$
 \frac{\partial\mathcal L}{\partial x}
-=\frac{\partial\mathcal L}{\partial y}
+=
+\frac{\partial\mathcal L}{\partial y}
 \frac{\partial y}{\partial z}
-\frac{\partial z}{\partial x}
+\frac{\partial z}{\partial x}.
 $$
 
-反向传播从 loss 开始，按计算图逆拓扑顺序传播 vector-Jacobian product，并累加一条变量通过多条路径对 loss 的贡献。
+前向传播按照 $x\rightarrow z\rightarrow y\rightarrow\mathcal L$ 计算结果；反向传播则从 Loss 开始，沿相反方向计算梯度。
 
-### 与梯度下降的区别
+### 反向传播为什么高效？
 
-- Backprop：计算梯度。
-- Optimizer：使用梯度更新参数，例如 SGD、AdamW。
+如果分别计算每个参数对 Loss 的影响，会重复进行大量相同计算。
+
+反向传播会先计算后面节点的梯度，然后将结果重复利用。例如，已经得到：
+
+$$
+\frac{\partial\mathcal L}{\partial y},
+$$
+
+就可以继续计算：
+
+$$
+\frac{\partial\mathcal L}{\partial z}
+=
+\frac{\partial\mathcal L}{\partial y}
+\frac{\partial y}{\partial z}.
+$$
+
+现代自动微分框架通常不会显式构造完整的 Jacobian，而是直接计算当前梯度与局部 Jacobian 的乘积，即 Vector-Jacobian Product。
+
+这样可以用接近一次前向传播的计算量，得到所有参数的梯度。
+
+### 一条变量经过多条路径时怎么办？
+
+如果变量 $x$ 通过两条路径影响 Loss：
+
+$$
+x\rightarrow a\rightarrow\mathcal L,
+\qquad
+x\rightarrow b\rightarrow\mathcal L,
+$$
+
+那么两条路径的贡献需要相加：
+
+$$
+\frac{\partial\mathcal L}{\partial x}
+=
+\frac{\partial\mathcal L}{\partial a}
+\frac{\partial a}{\partial x}
++
+\frac{\partial\mathcal L}{\partial b}
+\frac{\partial b}{\partial x}.
+$$
+
+这也是残差连接和多分支网络在反向传播时梯度会自动累加的原因。
+
+### 反向传播与梯度下降的区别
+
+- **Backpropagation**：计算梯度。
+- **Optimizer**：使用梯度更新参数。
+- **Learning Rate**：控制每次更新的大小。
+
+以 SGD 为例：
+
+$$
+w
+\leftarrow
+w-\eta\frac{\partial\mathcal L}{\partial w}.
+$$
+
+其中，$\partial\mathcal L/\partial w$ 由反向传播得到，SGD 负责使用它更新 $w$。
+
+因此：
+
+> Backpropagation 告诉模型应该往哪个方向改，Optimizer 决定具体怎么改。
 
 ### 常见工程问题
 
-- 梯度消失/爆炸。
-- 忘记清零梯度导致意外累积。
-- 不恰当的 `detach` 或原地操作破坏计算图。
-- 混合精度下 overflow/underflow。
-- 张量 shape 广播成功但语义错误。
+- **忘记清零梯度**：很多框架默认累积梯度，多次 Backward 前没有清零会导致意外累加。
+- **错误使用 `detach`**：`detach` 会切断计算图，使前面的参数无法收到梯度。
+- **原地操作**：直接修改反向传播需要的中间结果，可能破坏计算图。
+- **数值溢出或下溢**：混合精度训练中，梯度可能变成 `inf`、`NaN` 或 0。
+- **广播错误**：Tensor Shape 可以成功广播，但计算的含义可能不正确。
+- **未进入训练模式**：Dropout 和 BatchNorm 在 Train Mode 与 Evaluation Mode 下行为不同。
+
+### 面试回答
+
+> 反向传播是链式法则在计算图上的高效实现。它从 Loss 开始，按照计算图的反方向传播梯度，并将一条变量经过不同路径产生的梯度相加。反向传播只负责计算梯度，SGD、AdamW 等 Optimizer 才负责使用梯度更新参数。
 
 ---
 
 ## 6. 梯度消失与梯度爆炸
 
+梯度消失和梯度爆炸都来自反向传播中的连续乘法。
+
+对于一个深层网络，前面层的梯度可以写成多个局部导数的乘积：
+
+$$
+\frac{\partial\mathcal L}{\partial h_l}
+=
+\frac{\partial\mathcal L}{\partial h_L}
+\prod_{k=l}^{L-1}
+\frac{\partial h_{k+1}}{\partial h_k}.
+$$
+
+如果这些导数大多小于 1，连乘后梯度会越来越小；如果大多大于 1，梯度就可能快速增大。
+
 ### 梯度消失
 
-梯度消失是反向传播时多层导数连乘后越来越小，前层几乎学不动。RNN 长序列、sigmoid/tanh 饱和区、很深网络都容易出现。
+梯度消失表示靠近输入的层收到的梯度非常小，参数几乎无法更新。
+
+常见表现：
+
+- 前面层的 Gradient Norm 接近 0；
+- 后面层还在学习，但前面层基本不变；
+- Train Loss 很早进入 Plateau；
+- 增加训练时间也没有明显改善。
+
+常见原因：
+
+- 网络过深；
+- Sigmoid 或 Tanh 长期进入饱和区；
+- RNN 处理很长的序列；
+- 参数初始化不合适；
+- 多层变换的局部导数持续小于 1。
 
 常见处理：
 
-- ReLU/GELU 等非饱和激活。
-- 残差连接、LayerNorm/BatchNorm。
-- 合理初始化（如 He、orthogonal）。
-- LSTM/GRU 或 Attention 缩短依赖路径。
-- 更短的反传路径和更密集监督。
+- 使用 ReLU、GELU、SiLU 等激活函数；
+- 使用 Residual Connection；
+- 使用合适的参数初始化，如 Xavier 或 He Initialization；
+- 使用 LayerNorm 或 BatchNorm 稳定激活值；
+- RNN 中使用 LSTM、GRU 或 Attention；
+- 增加中间监督，缩短 Loss 到前面层的传播路径。
+
+### 为什么残差连接有帮助？
+
+普通网络为：
+
+$$
+h_{l+1}=F(h_l).
+$$
+
+残差网络为：
+
+$$
+h_{l+1}=h_l+F(h_l).
+$$
+
+反向传播时：
+
+$$
+\frac{\partial h_{l+1}}{\partial h_l}
+=
+I+\frac{\partial F(h_l)}{\partial h_l}.
+$$
+
+其中的 $I$ 提供了一条直接传播梯度的路径。即使 $F$ 内部的梯度比较小，梯度仍然可以通过残差连接向前传播。
+
+这也是深层 ResNet 和 Transformer 普遍使用 Residual Connection 的重要原因。
 
 ### 梯度爆炸
 
-- Gradient clipping，常按 global norm：
+梯度爆炸表示梯度在反向传播过程中快速增大，导致参数更新过大。
+
+常见表现：
+
+- Gradient Norm 突然变得非常大；
+- Loss 剧烈震荡或突然升高；
+- 参数或 Loss 出现 `inf`、`NaN`；
+- 混合精度训练频繁出现 Overflow。
+
+常见原因：
+
+- Learning Rate 过大；
+- 参数初始化尺度过大；
+- RNN 长序列中的重复矩阵乘法；
+- 输入或标签中存在异常值；
+- Loss 计算数值不稳定。
+
+### 如何处理梯度爆炸？
+
+最常用的方法是 Gradient Clipping。按 Global Norm 裁剪时：
 
 $$
-g\leftarrow
-g\cdot\min\left(1,\frac{\tau}{\|g\|}\right)
+g
+\leftarrow
+g\cdot
+\min\left(
+1,\frac{\tau}{\|g\|_2}
+\right),
 $$
 
-- 降低学习率。
-- 稳定初始化和归一化。
-- 检查异常序列与 loss 数值。
+其中：
 
-Gradient clipping 主要处理爆炸，不能恢复已经消失的梯度。RNN 场景下的更多细节见 [05. NLP、RNN 与词向量](05-nlp-rnn.md)。
+- $g$ 是所有参数的梯度；
+- $\|g\|_2$ 是整体 Gradient Norm；
+- $\tau$ 是允许的最大 Gradient Norm。
+
+如果梯度没有超过 $\tau$，它保持不变；如果超过，就按比例缩小。
+
+其他处理方法包括：
+
+- 降低 Learning Rate；
+- 使用合适的参数初始化；
+- 使用 LayerNorm 或 BatchNorm；
+- 检查异常输入、标签和 Loss；
+- 混合精度训练中使用 Loss Scaling。
+
+需要注意：
+
+> Gradient Clipping 可以限制过大的梯度，但不能恢复已经消失的梯度。
+
+### 面试回答
+
+> 梯度消失和梯度爆炸都来自反向传播中的多层导数连乘。导数长期小于 1 时梯度会消失，长期大于 1 时梯度会爆炸。梯度消失通常通过非饱和激活、残差连接、归一化和合理初始化处理；梯度爆炸通常通过 Gradient Clipping、降低学习率和稳定数值范围处理。
 
 ---
 
 ## 7. 激活函数
 
+神经网络的一层通常写为：
+
+$$
+h=\phi(Wx+b),
+$$
+
+其中，$Wx+b$ 是线性变换，$\phi$ 是激活函数。
+
 ### 为什么需要非线性激活？
 
-没有非线性，多层线性变换的复合仍是线性，网络退化为单层线性模型，无法拟合复杂函数。激活函数引入非线性，使网络能逼近任意函数。
+如果没有激活函数，多层线性变换仍然可以合并成一个线性变换：
+
+$$
+W_2(W_1x+b_1)+b_2
+=
+W'x+b'.
+$$
+
+无论叠加多少层，模型仍然只能学习线性关系。
+
+激活函数引入非线性，使多层网络能够学习曲线、复杂决策边界和层次化特征。
+
+### 常见激活函数
+
+| 激活函数   | 输出范围           | 优点                         | 主要问题                     | 常见位置               |
+| ---------- | ------------------ | ---------------------------- | ---------------------------- | ---------------------- |
+| Sigmoid    | $(0,1)$            | 可以表示概率                 | 两端饱和、梯度消失、非零中心 | 二分类输出层、门控结构 |
+| Tanh       | $(-1,1)$           | 零中心                       | 两端仍会饱和                 | 传统 RNN、门控结构     |
+| ReLU       | $[0,\infty)$       | 简单、计算快、正区间梯度稳定 | 可能出现 Dying ReLU          | CNN、MLP               |
+| Leaky ReLU | $(-\infty,\infty)$ | 负区间仍保留小梯度           | 负区间斜率需要设置           | CNN、MLP               |
+| GELU       | $(-\infty,\infty)$ | 平滑地控制输入通过程度       | 计算比 ReLU 复杂             | BERT、部分 Transformer |
+| SiLU       | $(-\infty,\infty)$ | 平滑且负区间保留梯度         | 计算比 ReLU 复杂             | 现代视觉与语言模型     |
 
 ### Sigmoid
 
 $$
-\sigma(x)=\frac{1}{1+e^{-x}}
+\sigma(x)=\frac{1}{1+e^{-x}}.
 $$
 
-输出 $0$ 到 $1$，可做概率，但两端饱和、容易梯度消失，且非零中心。
+Sigmoid 将输入映射到 0 到 1，适合表示二分类概率。
+
+它的导数为：
+
+$$
+\sigma'(x)=\sigma(x)(1-\sigma(x)).
+$$
+
+当 $x$ 很大或很小时，导数接近 0。因此，在深层网络中重复使用 Sigmoid 容易造成梯度消失。
 
 ### Tanh
 
 $$
-\tanh(x)=\frac{e^x-e^{-x}}{e^x+e^{-x}}
+\tanh(x)
+=
+\frac{e^x-e^{-x}}{e^x+e^{-x}}.
 $$
 
-输出 $-1$ 到 $1$，零中心，但仍可能饱和。
+Tanh 的输出范围是 $-1$ 到 $1$，并且以 0 为中心。相比 Sigmoid，它通常更适合表示隐藏状态，但输入绝对值较大时仍然会进入饱和区。
 
 ### ReLU
 
 $$
-\operatorname{ReLU}(x)=\max(0,x)
+\operatorname{ReLU}(x)=\max(0,x).
 $$
 
-简单高效，缓解梯度消失，但负半轴梯度为零，可能出现 dead ReLU。
+当 $x>0$ 时，ReLU 的梯度为 1，因此可以缓解正区间中的梯度消失。
 
-### GELU / SiLU / SwiGLU
+当 $x<0$ 时，输出和梯度都为 0。这可能导致某些神经元长期无法更新，即 Dying ReLU。
 
-- **GELU**：$x\Phi(x)$，按输入大小平滑门控，BERT、GPT 常用。
-- **SiLU/Swish**：$x\sigma(x)$，平滑、非单调。
-- **SwiGLU**：门控线性单元，现代 Transformer FFN 常用，公式与动机见 [06. LLM 基础](06-llm-foundations.md)。
+### GELU、SiLU 与 SwiGLU
 
-这些现代激活在相近计算预算下通常优于 ReLU。
+GELU：
 
-### 追问：Dying ReLU 怎么办？
+$$
+\operatorname{GELU}(x)=x\Phi(x),
+$$
 
-Dying ReLU 是某些神经元长期输出 0，梯度也接近 0。常见处理：
+其中 $\Phi(x)$ 是标准正态分布的累积分布函数。它会根据输入大小平滑地保留或减弱输入。
 
-- 降低 learning rate。
-- 使用 He initialization。
-- 换 Leaky ReLU、GELU、SiLU。
-- 加 normalization 或 residual connection。
+SiLU：
+
+$$
+\operatorname{SiLU}(x)=x\sigma(x).
+$$
+
+SiLU 在负区间仍保留一定梯度，并且整体更加平滑。
+
+SwiGLU 不只是一个单独的激活函数，而是一种带门控的 FFN 结构，可以简化表示为：
+
+$$
+\operatorname{SwiGLU}(x)
+=
+\operatorname{SiLU}(xW_g)\odot(xW_v).
+$$
+
+其中一个分支生成内容，另一个分支决定多少内容可以通过。许多现代 Transformer 使用 SwiGLU 作为 FFN 的核心结构。
+
+不能简单说某个激活函数在所有任务上都最好。实际效果还取决于模型结构、参数量和计算预算。
+
+### Dying ReLU 是什么？
+
+如果某个 ReLU 神经元的输入长期小于 0：
+
+$$
+Wx+b<0,
+$$
+
+它的输出和梯度都会一直为 0，参数无法继续更新。
+
+常见原因：
+
+- Learning Rate 太大，一次更新将神经元推入负区间；
+- 参数初始化不合适；
+- 输入分布发生明显偏移。
+
+常见处理：
+
+- 降低 Learning Rate；
+- 使用 He Initialization；
+- 使用 Leaky ReLU、GELU 或 SiLU；
+- 使用合适的 Normalization；
+- 使用 Residual Connection。
+
+### 输出层如何选择激活函数？
+
+- **回归任务**：通常使用线性输出，不加激活。
+- **二分类**：通常使用一个 Logit，并通过 Sigmoid 得到概率。
+- **多分类且类别互斥**：使用 Softmax。
+- **多标签分类**：每个标签独立使用 Sigmoid。
+
+### 面试回答
+
+> 激活函数为神经网络引入非线性。如果没有激活函数，多层线性变换仍然等价于一层线性模型。Sigmoid 和 Tanh 可能在饱和区造成梯度消失；ReLU 简单高效，但可能出现 Dying ReLU；GELU、SiLU 和 SwiGLU 更平滑，因此常用于现代 Transformer。
 
 ---
 
 ## 8. Softmax 及其反向传播
 
-### 前向
+神经网络的最后一层通常输出一组没有范围限制的数值，称为 Logits：
 
 $$
-s_i=\frac{e^{z_i}}{\sum_j e^{z_j}}
+z=[z_1,z_2,\ldots,z_C].
 $$
 
-数值稳定实现先减去最大 logit：
+Softmax 将这些 Logits 转换为一个概率分布：
 
 $$
 s_i
-=\frac{e^{z_i-\max(z)}}{\sum_j e^{z_j-\max(z)}}
+=
+\frac{e^{z_i}}
+{\sum_j e^{z_j}},
+\qquad
+\sum_i s_i=1.
 $$
 
-因为 softmax 对所有 logits 加同一常数不变，这可避免指数溢出。
+因此，Softmax 适合“多个类别中只能选择一个”的多分类任务。
 
-### Jacobian
+### Softmax 与 Sigmoid 的区别
+
+- **Softmax**：所有类别相互竞争，概率之和为 1，适合单标签多分类。
+- **Sigmoid**：每个类别独立判断，适合二分类或多标签分类。
+
+例如，一张图片只能属于猫、狗、鸟中的一个类别时使用 Softmax；一篇文章可以同时属于 AI、Security 和 Software Engineering 时，使用多个 Sigmoid。
+
+### 为什么要减去最大 Logit？
+
+直接计算 $e^{z_i}$ 时，如果 $z_i$ 很大，可能发生数值溢出。
+
+稳定实现为：
+
+$$
+s_i
+=
+\frac{e^{z_i-\max(z)}}
+{\sum_j e^{z_j-\max(z)}}.
+$$
+
+Softmax 对所有 Logits 同时加减同一个常数不会改变结果：
+
+$$
+\operatorname{softmax}(z)
+=
+\operatorname{softmax}(z+c).
+$$
+
+因此，减去最大值不会改变概率，但可以保证最大的指数项为 $e^0=1$，避免 Overflow。
+
+### Softmax 的 Jacobian
+
+Softmax 中每个输出都依赖所有 Logits：
 
 $$
 \frac{\partial s_i}{\partial z_j}
-=s_i(\delta_{ij}-s_j)
+=
+s_i(\delta_{ij}-s_j).
 $$
 
-即：
+其中：
 
-- 对角线：$s_i(1-s_i)$。
-- 非对角线：$-s_is_j$。
-
-矩阵形式：
+- 当 $i=j$ 时：
 
 $$
-J=\operatorname{diag}(s)-ss^\top
+\frac{\partial s_i}{\partial z_i}
+=
+s_i(1-s_i);
 $$
 
-### Softmax + Cross-Entropy
-
-若标签 one-hot 为 $y$，
+- 当 $i\neq j$ 时：
 
 $$
-\mathcal L=-\sum_i y_i\log s_i
+\frac{\partial s_i}{\partial z_j}
+=
+-s_is_j.
 $$
 
-则梯度可化简为：
+矩阵形式为：
 
 $$
-\frac{\partial\mathcal L}{\partial z}=s-y
+J
+=
+\operatorname{diag}(s)-ss^\top.
 $$
 
-面试手写时通常不应显式构造 $C\times C$ Jacobian；直接利用该化简更高效、稳定。手写实现见 [12. ML Coding](12-ml-coding.md)。
+### Softmax 与 Cross-Entropy
+
+对于 One-Hot 标签 $y$，Cross-Entropy Loss 为：
+
+$$
+\mathcal L
+=
+-\sum_i y_i\log s_i.
+$$
+
+将 Softmax 和 Cross-Entropy 一起求导后，可以化简为：
+
+$$
+\frac{\partial\mathcal L}{\partial z}
+=
+s-y.
+$$
+
+这个结果非常直观：
+
+- 对正确类别，梯度为 $s_i-1$，会推动其 Logit 增大；
+- 对错误类别，梯度为 $s_i$，会推动其 Logit 减小。
+
+实际实现中不需要显式构造 $C\times C$ 的 Jacobian。深度学习框架通常会将 LogSoftmax 和 Cross-Entropy 合并计算，以提高效率和数值稳定性。
+
+### 面试回答
+
+> Softmax 将一组 Logits 转换为和为 1 的概率分布，适合类别互斥的多分类任务。数值稳定实现会先减去最大 Logit。Softmax 的 Jacobian 是 $\operatorname{diag}(s)-ss^\top$，与 Cross-Entropy 结合后，对 Logits 的梯度可以直接化简为 $s-y$。
 
 ---
 
 ## 9. Dropout
 
-### 直观理解
+L1、L2 通过限制参数减少 Overfitting；Dropout 则通过在训练过程中随机删除部分激活值，降低模型对固定特征组合的依赖。
 
-Dropout 做的事很简单：
+因此，Dropout 是一种带随机性的正则化方法。
 
-> **训练时，随机把一部分神经元输出变成 0；推理时，所有神经元都正常工作。**
+### 30 秒回答
 
-比如某一层有 10 个神经元，dropout rate $p=0.2$，训练时每次大约随机关掉 2 个。下一次 forward 又随机关掉另一批。
-
-这样做的目的：
-
-- 不让模型太依赖某几个神经元。
-- 逼模型用更多不同特征一起做判断。
-- 减少过拟合。
-
-可以把它理解成：训练时不断让模型在“残缺网络”上练习，所以它不会死记某条固定路径。
-
-### 为什么训练时要除以 $1-p$？
-
-如果 dropout rate 是 $p=0.5$，原来两个神经元输出都是 1：
-
-```text
-不 Dropout: 1 + 1 = 2
-Dropout 后: 只剩一个 1，总和变成 1
-```
-
-输出平均变小了。为了让训练时的输出规模和推理时差不多，现代框架会在训练时把保留下来的神经元放大：
+训练时，Dropout 随机将一部分神经元输出设为 0：
 
 $$
-\tilde h_i=\frac{m_i h_i}{1-p}
+\tilde h_i
+=
+\frac{m_i h_i}{1-p},
+\qquad
+m_i\sim\operatorname{Bernoulli}(1-p),
 $$
 
 其中：
 
-- $m_i=0$：这个神经元被关掉。
-- $m_i=1$：这个神经元保留。
-- $p$：被关掉的概率。
+- $p$ 是 Dropout Rate，即删除概率；
+- $m_i=0$ 表示该激活被删除；
+- $m_i=1$ 表示该激活被保留。
 
-例子：$p=0.5$ 时，保留下来的输出会乘以 $1/(1-0.5)=2$。
+推理时关闭 Dropout，所有神经元都正常工作。
 
-这样训练时的期望不变：
+### Dropout 为什么能够减少 Overfitting？
+
+如果没有 Dropout，模型可能形成一条固定的预测路径，并过度依赖少数神经元。
+
+加入 Dropout 后，任何神经元都可能在当前 Forward Pass 中被删除，因此模型必须让不同特征共同承担预测任务。
+
+它主要产生三种效果：
+
+- **减少固定依赖**：模型不能只依赖少数神经元。
+- **注入训练噪声**：每次 Forward Pass 使用不同的激活组合。
+- **近似模型集成**：训练过程可以看作在共享参数的多个子网络上训练。
+
+从 Bias-Variance 的角度看，Dropout 通常通过增加训练难度来降低 Variance，但 Dropout Rate 过大也会增加 Bias，导致 Underfitting。
+
+### 为什么训练时要除以 $1-p$？
+
+Dropout 后，只剩下大约 $1-p$ 比例的激活值。如果不进行缩放，整层输出的平均大小会下降。
+
+使用 Inverted Dropout：
 
 $$
-\mathbb E[\tilde h_i]=h_i
+\tilde h_i
+=
+\frac{m_i h_i}{1-p},
 $$
 
-这叫 **inverted dropout**。好处是：推理时直接关掉 dropout，不需要再手动缩放。
+其期望为：
 
-### 为什么有效？
+$$
+\mathbb E[\tilde h_i]
+=
+\frac{\mathbb E[m_i]h_i}{1-p}
+=
+h_i.
+$$
 
-- **减少依赖**：某个神经元可能随时被关掉，所以其他神经元也要学会有用特征。
-- **类似集成**：每次训练都像在训练一个不同的子网络，最后共享同一套参数。
-- **增加噪声**：训练更难一点，但泛化通常更好。
+因此，训练时和推理时的输出期望保持一致。
 
-### 什么时候用？
+现代框架通常使用 Inverted Dropout：
 
-- 模型明显过拟合时可以加。
-- 数据少、模型大时常有帮助。
-- CNN、MLP、Transformer 都可能用，但位置和比例要调。
+- 训练时：随机置 0，并将保留值除以 $1-p$；
+- 推理时：直接关闭 Dropout，不需要额外缩放。
 
-### 注意
+### Dropout 应该什么时候使用？
 
-- 推理时必须调用 evaluation mode，否则输出会随机。
-- Dropout rate 过大，信息丢太多，会欠拟合。
-- BatchNorm 与 Dropout 同用时，随机激活可能影响 batch 统计。
-- 大模型数据很多时，不一定需要很高 dropout。
+Dropout 更适合以下情况：
 
-### 面试怎么说？
+- Train Loss 很低，但 Validation Loss 明显更高；
+- 模型较大，但训练数据有限；
+- 增加数据比较困难；
+- 全连接层或 Transformer 出现明显 Overfitting。
 
-> Dropout 是一种防过拟合方法。训练时随机把一部分神经元输出置 0，迫使模型不要依赖某几个特征；推理时关闭 Dropout。现代框架用 inverted dropout，训练时把保留的激活除以 $1-p$，这样推理时不需要额外缩放。
+如果模型已经 Underfitting，通常不应该继续增加 Dropout。
+
+现代大模型拥有大量训练数据，并且还会使用 Weight Decay、数据清洗和其他正则化，因此不一定需要很高的 Dropout Rate。
+
+### Dropout 与 BatchNorm
+
+Dropout 会随机改变激活值分布，而 BatchNorm 需要根据当前 batch 估计激活值的均值和方差。
+
+如果 Dropout 放在 BatchNorm 前面，它产生的随机变化可能影响 BatchNorm 的统计量。因此，两者同时使用时需要注意顺序和实际验证结果。
+
+常见做法是先进行 BatchNorm，再使用激活函数和 Dropout，但具体顺序仍取决于网络结构。
+
+### 常见工程问题
+
+- 推理前没有切换到 Evaluation Mode，导致输出仍然随机；
+- Dropout Rate 太大，模型出现 Underfitting；
+- 验证时错误地保持 Dropout 开启；
+- 误以为 Dropout 会减少参数量或推理成本。
+
+Dropout 只是暂时屏蔽激活值，不会真正删除模型参数，因此通常不会减少模型大小或常规推理成本。
+
+### 面试回答
+
+> Dropout 是一种随机正则化方法。训练时，它随机将部分激活值设为 0，减少模型对少数神经元和固定特征组合的依赖；推理时关闭 Dropout。现代框架使用 Inverted Dropout，在训练时将保留的激活除以 $1-p$，使训练和推理阶段的输出期望保持一致。
 
 ---
 
 ## 10. Perceptron
 
-Perceptron 是早期线性二分类模型：
+Perceptron 可以看作最简单的人工神经元：
+
+1. 对输入进行线性加权；
+2. 加上 Bias；
+3. 使用阶跃函数输出分类结果。
+
+它是理解线性分类器和神经网络基本结构的起点。
+
+### 前向计算
+
+对于输入 $x$，Perceptron 首先计算：
 
 $$
-\hat y=\operatorname{sign}(w^\top x+b)
+z=w^\top x+b.
 $$
 
-如果样本被错分，就按标签方向更新权重。它只能学线性可分边界，是理解线性分类和神经网络的基础。
+然后根据 $z$ 的正负进行分类：
 
-### 追问：Perceptron 为什么不能解决 XOR？
+$$
+\hat y
+=
+\operatorname{sign}(w^\top x+b).
+$$
 
-Perceptron 是线性分类器，只能画一条线/超平面。XOR 不是线性可分，所以单层 perceptron 解决不了；需要非线性特征、多层网络或 kernel 方法。
+它的决策边界为：
+
+$$
+w^\top x+b=0,
+$$
+
+这是一条直线、一个平面或更高维空间中的超平面。因此，Perceptron 本质上是线性分类器。
+
+### Perceptron 如何学习？
+
+假设标签为：
+
+$$
+y\in\{-1,+1\}.
+$$
+
+当样本被正确分类时：
+
+$$
+y(w^\top x+b)>0,
+$$
+
+不需要更新参数。
+
+当样本被错误分类时：
+
+$$
+y(w^\top x+b)\leq 0,
+$$
+
+按照标签方向更新：
+
+$$
+w
+\leftarrow
+w+\eta yx,
+$$
+
+$$
+b
+\leftarrow
+b+\eta y.
+$$
+
+这个更新会让当前样本下一次更可能被正确分类。
+
+如果训练数据线性可分，Perceptron Learning Algorithm 可以在有限次更新后找到一个能够正确分类训练数据的超平面。如果数据不是线性可分的，它可能持续更新而无法收敛。
+
+### Perceptron 与神经网络有什么关系？
+
+Perceptron 已经包含神经网络单元的基本结构：
+
+$$
+\text{output}
+=
+\text{activation}(w^\top x+b).
+$$
+
+但传统 Perceptron 使用不可微的阶跃函数，因此不能直接使用现代反向传播训练多层网络。
+
+现代神经网络将阶跃函数替换为 ReLU、Sigmoid、GELU 等可训练的激活函数，并将多个神经元和多层结构组合起来。
+
+### Perceptron、Logistic Regression 与神经网络
+
+| 模型                | 变换                     | 输出       | 决策边界     |
+| ------------------- | ------------------------ | ---------- | ------------ |
+| Perceptron          | $w^\top x+b$             | 硬分类结果 | 线性         |
+| Logistic Regression | $\sigma(w^\top x+b)$     | 分类概率   | 线性         |
+| 多层神经网络        | 多层线性变换和非线性激活 | 概率或数值 | 可以是非线性 |
+
+Logistic Regression 虽然使用了 Sigmoid，但其决策边界仍然由 $w^\top x+b=0$ 决定，因此仍然是线性分类器。
+
+多层神经网络通过隐藏层学习新的特征表示，才能形成复杂的非线性决策边界。
+
+### Perceptron 为什么不能解决 XOR？
+
+XOR 的输入与输出为：
+
+| $x_1$ | $x_2$ |  $y$ |
+| ----: | ----: | ---: |
+|     0 |     0 |    0 |
+|     0 |     1 |    1 |
+|     1 |     0 |    1 |
+|     1 |     1 |    0 |
+
+正类位于两个对角位置，负类位于另外两个对角位置。无法用一条直线将两类完全分开，因此 XOR 不是线性可分问题。
+
+单层 Perceptron 只能学习线性决策边界，所以不能解决 XOR。
+
+解决方法包括：
+
+- 人工加入非线性特征，例如 $x_1x_2$；
+- 使用 Kernel Method；
+- 使用带隐藏层和非线性激活函数的多层神经网络。
+
+### 面试回答
+
+> Perceptron 是一个线性二分类模型，先计算 $w^\top x+b$，再通过阶跃函数输出类别。样本被错分时，它按照标签方向更新权重。如果数据线性可分，Perceptron 可以收敛；如果数据不是线性可分的，它可能无法收敛。XOR 不是线性可分问题，所以单层 Perceptron 无法解决，需要非线性特征或多层神经网络。
 
 ---
 
-## 11. CNN 基础
-
-CNN 用卷积核在局部区域共享参数，适合图像等有局部结构的数据。
-
-- **Convolution**：提取局部模式。
-- **Pooling / stride**：降采样，扩大感受野。
-- **Parameter sharing**：同一个卷积核扫过不同位置，参数少于全连接。
-
-现在视觉任务也大量使用 ViT，但 CNN 仍是理解局部归纳偏置的重要基础。
-
-### 追问：为什么 CNN 适合图像？
-
-- **局部连接**：相邻像素相关性强，卷积核只看局部感受野。
-- **参数共享**：同一模式（如边缘）出现在任何位置都能被同一核检测，大幅减少参数。
-- **平移等变性**：物体平移后特征图也对应平移，符合图像的归纳偏置。
-
----
-
-## 12. 迁移学习（Transfer Learning）
-
-### 30 秒回答
-
-迁移学习是把在一个任务/领域上学到的知识（通常是预训练模型的参数）迁移到一个新的、数据较少的目标任务上，而不是从零训练。
-
-它之所以有效，是因为大规模预训练学到的低层和中层表示（边缘、纹理、语法、语义）往往是通用的，目标任务只需在此基础上做少量适配。
-
-### 常见做法
-
-- **Feature extraction**：冻结大部分 backbone，只训练新的输出 head。数据极少时首选。
-- **Fine-tuning**：解冻部分或全部层，用较小学习率继续训练。数据稍多时效果更好。
-- **逐步解冻**：先训 head，再自上而下逐步解冻，兼顾稳定和效果。
-- **PEFT**：LoRA、Adapter、Prompt Tuning 等只训练少量参数，是 LLM 时代主流，省显存、易部署多任务。
-
-### 什么时候用？
-
-- 目标任务标注数据少。
-- 存在与目标相近领域的强预训练模型。
-- 想节省训练成本和时间。
-
-### 追问：迁移学习可能失败或有害吗？
-
-会。当源任务与目标任务差异过大时可能出现 **负迁移（negative transfer）**，预训练知识反而拖累目标任务。此外：
-
-- 学习率太大会破坏预训练表示（catastrophic forgetting）。
-- 源域偏差/不公平也会被迁移过来。
-- 目标数据分布和源差异大时，需更多 fine-tuning 或领域自适应。
-
-标注数据有限时的完整策略，见 [11. Production ML](11-production-ml.md)。
-
-### 面试怎么说？
-
-> 迁移学习是用预训练模型的通用表示初始化新任务，再做特征提取或微调，数据少时特别有效。现在 LLM 主要用 LoRA 这类 PEFT 做轻量适配。但要注意源目标差异过大会负迁移，微调学习率太大会灾难性遗忘。
+[返回目录](README.md)

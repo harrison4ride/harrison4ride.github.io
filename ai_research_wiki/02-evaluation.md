@@ -179,35 +179,6 @@ $$
 
 常用于连续值回归，对大误差惩罚较强。它对应预测条件均值；在同方差高斯噪声假设下也对应负对数似然。
 
-常见同类指标：RMSE（量纲与目标一致）、MAE（抗 outlier）、$R^2$（解释方差比例）。选择取决于对异常值的敏感度和可解释性需求。MSE/MAE/Huber 的对比见 [01. 基础与神经网络机制](01-foundations.md)。
-
 ---
 
-## 6. 如何判断两个模型谁更好？
-
-### 基本流程
-
-1. 先定义业务目标、主指标和不能退化的 guardrail 指标。
-2. 使用独立测试集，确保两个模型在相同样本、预处理和阈值条件下比较。
-3. 报告差值、置信区间和分组结果，不只比较单个均值。
-4. 根据任务选 paired statistical test。
-5. 最终用线上 A/B test 验证真实用户和系统影响。
-
-### 追问：什么时候不用 Deep Learning？
-
-数据少、特征是结构化表格、需要强可解释、延迟/成本很严格时，先用 Logistic Regression、Random Forest、XGBoost。深度模型不是默认答案，尤其在 tabular data 上，树模型经常更强也更稳。
-
-### 常用方法
-
-- **Paired bootstrap**：对同一测试样本成对重采样，估计指标差的置信区间，适合 Accuracy、F1、BLEU 等复杂指标。
-- **Permutation test**：在零假设下交换两个模型的样本级结果，构造差值分布。
-- **McNemar test**：比较两个分类器在同一批样本上的不一致错误。
-- **交叉验证**：数据少时评估跨切分稳定性；模型选择和最终评估应使用 nested CV，避免调参泄漏。
-- **A/B test**：需要预先定义样本量、显著性水平、最小可检测效应和停止规则。
-
-### 注意
-
-- Statistical significance 不等于 practical significance。
-- 多指标、多切片反复检验要控制 multiple comparisons。
-- 时间序列、用户行为等相关样本不能当作独立样本随意 bootstrap。
-- 若模型用于概率决策，应同时比较 discrimination、calibration 和业务效用。
+[返回目录](README.md)

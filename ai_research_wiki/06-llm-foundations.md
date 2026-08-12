@@ -212,12 +212,12 @@ $$
 
 ### 绝对与相对位置的权衡
 
-| 方法 | 优点 | 局限 |
-| --- | --- | --- |
-| 固定正弦 | 无额外可训练参数；可计算训练长度外的位置 | 外推效果不一定稳定；位置和语义直接相加 |
-| 可学习绝对位置 | 简单；训练范围内表达灵活 | 通常受最大位置表限制；长度外泛化弱 |
-| Relative Bias / ALiBi | 直接建模距离；常有较好长度外推 | 表达形式受偏置函数限制 |
-| RoPE | 相对位置自然进入 QK 点积；实现高效 | 原始版本超出训练长度后退化；需要缩放策略 |
+| 方法                  | 优点                                     | 局限                                     |
+| --------------------- | ---------------------------------------- | ---------------------------------------- |
+| 固定正弦              | 无额外可训练参数；可计算训练长度外的位置 | 外推效果不一定稳定；位置和语义直接相加   |
+| 可学习绝对位置        | 简单；训练范围内表达灵活                 | 通常受最大位置表限制；长度外泛化弱       |
+| Relative Bias / ALiBi | 直接建模距离；常有较好长度外推           | 表达形式受偏置函数限制                   |
+| RoPE                  | 相对位置自然进入 QK 点积；实现高效       | 原始版本超出训练长度后退化；需要缩放策略 |
 
 ---
 
@@ -338,11 +338,11 @@ $$
 
 ### 权衡
 
-| 方法 | 质量 | KV Cache / 带宽 | 典型适用 |
-| --- | --- | --- | --- |
-| MHA | 表达能力强 | 最大 | 质量优先、较短上下文 |
-| MQA | 可能损失质量 | 最小 | 极致推理吞吐 |
-| GQA | 接近 MHA | 明显降低 | 当前主流折中 |
+| 方法 | 质量         | KV Cache / 带宽 | 典型适用             |
+| ---- | ------------ | --------------- | -------------------- |
+| MHA  | 表达能力强   | 最大            | 质量优先、较短上下文 |
+| MQA  | 可能损失质量 | 最小            | 极致推理吞吐         |
+| GQA  | 接近 MHA     | 明显降低        | 当前主流折中         |
 
 ### 面试加分点
 
@@ -354,11 +354,11 @@ $$
 
 ## 5. Encoder-Only、Decoder-Only、Encoder-Decoder
 
-| 架构 | Attention | 训练目标 | 擅长任务 | 代表 |
-| --- | --- | --- | --- | --- |
-| Encoder-Only | 双向 self-attention | Masked LM 等 | 分类、检索、序列标注、Embedding | BERT |
-| Decoder-Only | Causal self-attention | Next-token prediction | 开放生成、对话、代码、in-context learning | GPT、Llama、Qwen、DeepSeek |
-| Encoder-Decoder | Encoder 双向；Decoder 因果并 cross-attend encoder | 条件生成、span corruption | 翻译、摘要、结构化 seq2seq | T5、BART |
+| 架构            | Attention                                         | 训练目标                  | 擅长任务                                  | 代表                       |
+| --------------- | ------------------------------------------------- | ------------------------- | ----------------------------------------- | -------------------------- |
+| Encoder-Only    | 双向 self-attention                               | Masked LM 等              | 分类、检索、序列标注、Embedding           | BERT                       |
+| Decoder-Only    | Causal self-attention                             | Next-token prediction     | 开放生成、对话、代码、in-context learning | GPT、Llama、Qwen、DeepSeek |
+| Encoder-Decoder | Encoder 双向；Decoder 因果并 cross-attend encoder | 条件生成、span corruption | 翻译、摘要、结构化 seq2seq                | T5、BART                   |
 
 ### 为什么通用 LLM 多为 Decoder-Only？
 
@@ -496,11 +496,11 @@ Tokenizer 把文本映射为有限词表中的 token ID。子词算法在“整�
 同样迭代合并子词，但通常按语言模型似然或类似于
 $\frac{p(ab)}{p(a)p(b)}$ 的分数选择合并，而不只是原始频次。BERT 使用 WordPiece。
 
-| 维度 | BPE | WordPiece |
-| --- | --- | --- |
-| 合并依据 | 相邻对频率 | 使语料似然改善的分数 |
-| 实现 | 简单、常见 | 训练准则更贴近概率模型 |
-| OOV | byte-level BPE 可基本消除 | 常依赖字符覆盖和 `[UNK]` |
+| 维度     | BPE                       | WordPiece                |
+| -------- | ------------------------- | ------------------------ |
+| 合并依据 | 相邻对频率                | 使语料似然改善的分数     |
+| 实现     | 简单、常见                | 训练准则更贴近概率模型   |
+| OOV      | byte-level BPE 可基本消除 | 常依赖字符覆盖和 `[UNK]` |
 
 ### 面试加分点
 
@@ -672,3 +672,5 @@ $$
 4. 用短序列验证 shape 和数值，评估切换实现是否改变精度、速度和显存。
 
 这是实现层面的行为，不应概括成某个模型“Attention Weights 永远为 None”。
+
+[返回目录](README.md)

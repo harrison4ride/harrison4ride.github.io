@@ -242,14 +242,14 @@ $$
 
 ### 相比 PPO-RLHF
 
-| 维度 | PPO-RLHF | DPO |
-| --- | --- | --- |
-| Reward Model | 显式训练 | 不需要显式 RM |
-| 数据 | 在线 rollout + RM | 离线偏好 pair |
-| 组件 | policy、reference、RM、value | policy、reference |
-| 稳定性 | 调参复杂 | 类似监督训练，通常更稳 |
-| 探索 | 可在线探索新输出 | 受离线数据覆盖限制 |
-| 奖励 | 可组合环境和规则奖励 | 原始形式依赖 pair preference |
+| 维度         | PPO-RLHF                     | DPO                          |
+| ------------ | ---------------------------- | ---------------------------- |
+| Reward Model | 显式训练                     | 不需要显式 RM                |
+| 数据         | 在线 rollout + RM            | 离线偏好 pair                |
+| 组件         | policy、reference、RM、value | policy、reference            |
+| 稳定性       | 调参复杂                     | 类似监督训练，通常更稳       |
+| 探索         | 可在线探索新输出             | 受离线数据覆盖限制           |
+| 奖励         | 可组合环境和规则奖励         | 原始形式依赖 pair preference |
 
 ### DPO 局限
 
@@ -418,3 +418,5 @@ RLAIF 使用 AI 生成偏好、批评、原则判断或奖励，替代或补充�
 - 混合 SFT replay，防止能力遗忘。
 - 优化目标加入简洁性和 calibration，而不是一味奖励更长。
 - 线上 A/B 以任务成功、追问率、用户修正率为准，不以 RM 分数代替。
+
+[返回目录](README.md)

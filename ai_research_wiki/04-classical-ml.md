@@ -86,7 +86,23 @@ $$
 
 ---
 
-## 2. MSE、KL Divergence 与 Cross-Entropy
+## 2. MAE、MSE、KL Divergence 与 Cross-Entropy
+
+#### MAE
+
+L1 loss 也叫 Mean Absolute Error：
+
+$$
+L_1=\frac1n\sum_i |y_i-\hat y_i|
+$$
+
+特点：
+
+- 对异常值没那么敏感。
+- 误差从 10 变 100，惩罚也只是线性变大。
+- 缺点是在误差为 0 的地方不光滑，优化时可能没 MSE 顺。
+
+适合：数据里有 outlier，或者你不想让少数极端误差主导训练。
 
 ### MSE
 
@@ -208,13 +224,13 @@ $$
 
 ### 比较
 
-| 维度 | Logistic Regression | SVM |
-| --- | --- | --- |
-| 输出 | 概率，仍需检查校准 | decision score / margin |
-| Loss | Logistic / cross-entropy | Hinge |
-| 关键样本 | 所有样本都有非零影响但远端影响变小 | 主要由 margin 内的 support vectors 决定 |
-| 非线性 | 特征映射或核方法 | Kernel trick 成熟 |
-| 大规模训练 | SGD/二阶方法方便 | 线性 SVM 可扩展；核 SVM 随样本数变贵 |
+| 维度       | Logistic Regression                | SVM                                     |
+| ---------- | ---------------------------------- | --------------------------------------- |
+| 输出       | 概率，仍需检查校准                 | decision score / margin                 |
+| Loss       | Logistic / cross-entropy           | Hinge                                   |
+| 关键样本   | 所有样本都有非零影响但远端影响变小 | 主要由 margin 内的 support vectors 决定 |
+| 非线性     | 特征映射或核方法                   | Kernel trick 成熟                       |
+| 大规模训练 | SGD/二阶方法方便                   | 线性 SVM 可扩展；核 SVM 随样本数变贵    |
 
 不能简单说 SVM 天然比 Logistic Regression 抗异常值。严重错分点的 hinge loss 和 logistic loss 都会持续增长；鲁棒性取决于 $C$、正则化、特征尺度、异常值类型和是否使用鲁棒损失。
 
@@ -413,13 +429,13 @@ $$
 
 ### 与 K-Means 的区别
 
-| 维度 | K-Means | GMM |
-| --- | --- | --- |
-| 分配 | Hard assignment | Soft probability |
-| 目标 | 最小化簇内平方距离 | 最大化 mixture likelihood |
-| 簇形状 | 偏好球形、相似尺度 | 协方差可描述椭圆形和不同尺度 |
-| 输出 | centroid 与 cluster ID | 完整概率模型 |
-| 优化 | Lloyd algorithm | EM |
+| 维度   | K-Means                | GMM                          |
+| ------ | ---------------------- | ---------------------------- |
+| 分配   | Hard assignment        | Soft probability             |
+| 目标   | 最小化簇内平方距离     | 最大化 mixture likelihood    |
+| 簇形状 | 偏好球形、相似尺度     | 协方差可描述椭圆形和不同尺度 |
+| 输出   | centroid 与 cluster ID | 完整概率模型                 |
+| 优化   | Lloyd algorithm        | EM                           |
 
 K-Means 可视为在各 Gaussian 使用相同、各向同性且方差趋近 0 时，对 GMM 进行 hard assignment 的极限情形。
 
@@ -609,3 +625,5 @@ Lift 大于 1 表示正相关。常见算法包括 Apriori 和 FP-Growth。
 - lift $>1$：正相关。
 - lift $\approx1$：基本独立。
 - lift $<1$：负相关。
+
+[返回目录](README.md)
