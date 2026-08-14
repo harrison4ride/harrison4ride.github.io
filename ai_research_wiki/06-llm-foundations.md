@@ -164,6 +164,76 @@ $$
 
 ---
 
+## 1.2 Causal Attention（因果掩码）
+
+### 它长什么样
+
+在算完 $QK^\top/\sqrt{d_k}$ 之后、softmax 之前，加上一个上三角为 $-\infty$ 的掩码矩阵 $M$：
+
+$$
+M_{ij}=
+\begin{cases}
+0 & j\le i\\
+-\infty & j>i
+\end{cases}
+$$
+
+$-\infty$ 经过 softmax 的 $e^{-\infty}=0$，那些位置的注意力权重被彻底清零。所以第 $i$ 个 token 只能看到 $\le i$ 的位置。
+
+用 $-\infty$ 而不是直接把权重置 0，是因为要在 **softmax 之前**屏蔽——否则归一化的分母里仍然混进了未来 token 的贡献。实现上一般用一个很大的负数（如 `-1e9`）以避免 NaN。
+
+### 为什么必须有
+
+- **训练与推理要一致**：训练时整条序列并行计算，如果第 $t$ 个位置能看到第 $t+1$ 个 token，那它预测「下一个词」就是在抄答案，loss 会低得离谱，但推理时根本没有未来可看，模型立刻崩掉。
+- **一次前向拿到 $n$ 个训练信号**：戴上因果掩码后，一条长度为 $n$ 的序列同时给出 $n$ 个「预测下一个 token」的监督样本，训练效率极高。这正是 decoder-only 架构 scaling 顺利的原因之一。
+
+### 代价
+
+Encoder（BERT）不戴掩码，每个位置能同时看左右，理解类任务表示更强；decoder 只能看左边，代价是牺牲了一半的上下文来换取生成能力。这是架构选择的根本分岔，不是实现细节。
+
+---
+
+## 1.3 复杂度：$O(n^2d)$ 到底意味着什么
+
+对序列长度 $n$、表示维度 $d$：
+
+- Self-Attention 每层计算约 $O(n^2d)$，注意力矩阵显存 $O(n^2)$。
+- RNN 每层计算约 $O(nd^2)$，但必须沿 $n$ 个时间步串行。
+
+**别把 $O(n^2)$ 直接理解成「更慢」。** 每个 Q 都要和全部 $n$ 个 K 打一次分，得到 $n\times n$ 的矩阵，计算和显存都是平方级，$n=10^5$ 时 $n^2=10^{10}$，显存直接爆炸。但这 $n^2$ 次打分**彼此独立、可以并行**（GPU 最擅长），且任意两个 token 之间的**路径长度是 $O(1)$**；RNN 虽然是 $O(n)$ 却**必须串行**，第 $t$ 步要等第 $t-1$ 步。所以只要显存够，Transformer 实际更快，长依赖也建模得更好。
+
+几个容易记错的点：
+
+- 当 $n<d$ 时（比如 $n=512$、$d=4096$），单层 self-attention 的计算量甚至比 RNN 更小；$n$ 很长时 $n^2$ 项才成为瓶颈。
+- 序列从 2048 加到 4096，注意力矩阵的元素数变成 4 倍。这就是长文本训练和 prefill 又慢又占显存的直接原因。
+- 严格算训练显存还要计入每层激活，不能简单地把 RNN 的空间写成 $O(d)$。
+
+正因为 $O(n^2)$ 卡在这里，才有了 FlashAttention、滑动窗口、稀疏注意力、线性注意力和状态空间模型这些方案。
+
+---
+
+## 1.4 FlashAttention
+
+**一句话**：它是**实现层优化，数学结果与标准 Attention 完全一致**，不是近似算法。
+
+### 它解决什么问题
+
+标准实现会把 $n\times n$ 的注意力矩阵**物化**到显存（HBM）里：先算 $S=QK^\top$ 写回显存，再读出来算 softmax 写回，再读出来乘 $V$。中间那张大矩阵反复往返于显存和计算核心之间，而 GPU 的显存带宽远慢于算力——这是个典型的**访存受限**问题，算力大量空转。
+
+### 怎么做的
+
+- **分块（tiling）**：把 Q、K、V 切成小块，一次只把一小块搬进片上 SRAM（比 HBM 快一个量级但很小）。
+- **在线 softmax（online softmax）**：softmax 需要全行的最大值和求和，而分块时看不到全行。办法是边算边维护「当前最大值」和「当前累计和」，每来一个新块就按新旧最大值的差做一次指数缩放来修正之前的结果，数学上与一次性算完全等价。
+- **边算边扔**：$QK^\top$、softmax、乘 $V$ 在 SRAM 里一气呵成，那张 $n\times n$ 矩阵从不落地。反向传播需要它时重新算一遍（重计算比读写显存还便宜）。
+
+### 结果
+
+注意力部分的显存从 $O(n^2)$ 降到 $O(n)$，速度提升约 2–4×。注意提升来自**省访存**，FLOPs 其实没少（反向还多了重计算）。
+
+一个实践后果：正因为它不生成 $n\times n$ 矩阵，`output_attentions=True` 这类想拿注意力权重的做法会 OOM 或退化成慢速 eager 实现（见第 12 节）。
+
+---
+
 ## 2. 什么是位置编码？为什么必需？
 
 ### 30 秒回答
@@ -323,7 +393,23 @@ $$
 \operatorname{head}_h)W^O
 $$
 
-通常每头维度 $d_k=d_v=d_{\text{model}}/h$。多个头可以在不同投影子空间中关注不同关系；其优势是表达多样性，而不是“天然更不容易过拟合”。
+通常每头维度 $d_k=d_v=d_{\text{model}}/h$。
+
+### 为什么要多头？
+
+**根本原因：一次 softmax 只能表达一种关注模式。** 单头注意力里，每个 token 对全序列的权重加起来等于 1，它必须把这份「注意力预算」分配掉。可是同一个词往往需要同时关注好几件不同的事——
+
+> The animal didn't cross the street because **it** was too tired.
+
+这个 `it` 既要关注 `animal`（指代消解），又要关注 `tired`（语义搭配），还要关注句法上的主语位置。单头只能把预算摊开，结果是每样都关注一点、每样都糊；多头则让不同的头各自负责一种关系，互不抢占预算。
+
+**它不是「多算几遍取平均」。** 关键在于每个头有**自己独立的** $W_i^Q,W_i^K,W_i^V$，把输入投影到不同的子空间再算注意力。子空间不同，「相似」的判定标准就不同：有的头在句法子空间里算相似，有的头在语义子空间里算。最后 concat 起来过 $W^O$ 融合。
+
+**几点常被说错的：**
+
+- 多头**不增加计算量**。每头维度是 $d_{\text{model}}/h$，$h$ 个头拼起来还是 $d_{\text{model}}$，总 FLOPs 与单头基本相同——它是把同样的预算切开用，不是加倍投入。
+- 优势是**表达多样性**，不是「天然更不容易过拟合」。
+- 头数并非越多越好。$h$ 太大时每头维度过小（比如 $4096/64=64$），单个子空间表达能力不足，实践中存在最优区间。研究也发现训练完成后有相当比例的头是冗余的，可以剪掉。
 
 ### 为什么要共享 K/V？
 
@@ -438,46 +524,9 @@ $$
 
 ---
 
-## 7. 常见解码策略
+## 7. 解码策略
 
-### Greedy Search
-
-每一步选择概率最大的 token：
-
-$$
-y_t=\arg\max_y p(y\mid y_{<t},x)
-$$
-
-优点是快、确定、易复现；缺点是局部最优，容易重复或得到平庸答案。适合分类式输出、确定性抽取和部分代码任务。
-
-### Beam Search
-
-每一步保留累计 log probability 最大的 $B$ 个候选序列。相比 greedy 更接近全局高概率序列。
-
-- 优点：翻译、语音识别等目标相对确定的任务中常有效。
-- 缺点：成本约随 beam size 增长；开放生成中可能偏好安全、短或重复文本；高概率不等于高质量。
-- 常配合长度归一化、重复惩罚和 early stopping。
-
-### Top-K Sampling
-
-只保留概率最高的 K 个 token，重新归一化后采样。
-
-- 优点：过滤长尾低质量 token；多样性可控。
-- 缺点：固定 K 不适应概率分布的尖锐程度。某一步前 5 个已覆盖 99%，另一步前 5 个可能只覆盖 40%。
-
-### Nucleus / Top-P Sampling
-
-选择累计概率达到 $p$ 的最小 token 集合，再归一化采样。
-
-- 优点：候选集合大小动态变化，通常比固定 Top-K 灵活。
-- 缺点：仍可能产生事实错误；结果有随机性。
-
-### 其他常见参数
-
-- `temperature < 1` 使分布更尖锐，`temperature > 1` 增加随机性。
-- repetition / frequency penalty 抑制重复，但过强会破坏术语一致性。
-- constrained decoding 可用 grammar、JSON Schema、正则或状态机保证结构合法。
-- 推理模型常使用多样采样加 verifier、majority vote 或 best-of-N。
+Greedy、Temperature、Top-K、Top-P、Beam Search 以及 Best-of-N、self-consistency 等推理时策略，连同 prefill/decode、KV Cache 优化、continuous batching、speculative decoding、量化，一起放在 [09. 推理与部署](09-inference-and-serving.md)。
 
 ---
 
@@ -508,6 +557,34 @@ $\frac{p(ab)}{p(a)p(b)}$ 的分数选择合并，而不只是原始频次。BERT
 - 中文不等于“一字一个 token”；结果取决于词表和训练语料。
 - 词表越大，序列通常越短，但 embedding/output head 更大，稀有 token 学习也可能不足。
 - SentencePiece 是一种不依赖预分词的实现框架，可训练 BPE 或 Unigram 模型，不应直接与 BPE 当作同一层级概念比较。
+
+---
+
+## 8.1 Weight Tying（输入输出词嵌入共享）
+
+### 是什么
+
+模型两端各有一个 $V\times d$ 的大矩阵：入口的 input embedding（token ID → 向量）和出口的 output head / unembedding（向量 → 词表 logits）。Weight tying 就是让它们**共用同一份权重**：
+
+$$
+\text{logits}=h\,E^\top,\qquad E\in\mathbb R^{V\times d}
+$$
+
+### 为什么合理
+
+两个矩阵在做互逆的事，而且都在编码「每个词长什么样」这同一件事：入口问「这个 token 的向量是什么」，出口问「哪个 token 的向量和当前隐状态最像」——出口那一步本质上就是 $h$ 与每个词向量做内积，取最像的。既然是同一套词表示，没有理由学两遍。
+
+### 收益
+
+- **省参数**：$V=128\text{k}$、$d=4096$ 时，单个矩阵就是 5.24 亿参数。共享等于直接省下这么多，对小模型尤其可观——1B 级模型里两个 embedding 可能占到总参数的三成以上。
+- **省显存 / 带宽**：推理时少加载一份大矩阵。
+- **正则效果**：稀有词在输入侧和输出侧的梯度合并到同一份权重上，学得更充分。
+
+### 什么时候不绑
+
+- 大模型里 embedding 占比变小（70B 模型里那 5 亿参数无足轻重），而解绑能让输入输出各自优化，很多现代大模型（如 Llama 2 70B）选择**不绑**。
+- 绑定要求输入输出维度一致；若中间做了额外投影或用了不同的 embedding 缩放，需要额外处理。
+- 实践中还有一个坑：绑定时 embedding 的初始化尺度和 logits 的缩放需要配套调整，否则训练初期 logits 容易过大或过小。
 
 ---
 
@@ -563,6 +640,52 @@ SwiGLU 有两个输入投影。为保持参数量或 FLOPs 接近普通 FFN，�
 
 ---
 
+## 10.1 归一化：LayerNorm、RMSNorm 与 Norm 的位置
+
+### 为什么用 LayerNorm 而不是 BatchNorm
+
+$$
+\operatorname{LayerNorm}(x)=\frac{x-\mu}{\sqrt{\sigma^2+\epsilon}}\odot g+b
+$$
+
+区别只在**沿哪个方向统计**：LayerNorm 对**单个样本内部的所有特征维**求均值方差，与 batch 大小、序列长度都无关；BatchNorm 对一个 batch 内所有样本的同一维求统计。
+
+Transformer 用 LayerNorm 的原因就在这个「无关」上：
+
+- NLP 序列长度不一，padding 和 token 分布会污染 batch 统计。
+- 自回归推理时 batch 可能只有 1，BatchNorm 的统计量无从谈起，还要维护训练/推理两套行为。
+- LayerNorm 每个样本独立计算，变长序列和逐 token 推理都没有额外负担。
+
+### RMSNorm
+
+$$
+\operatorname{RMSNorm}(x)
+=\frac{x}{\sqrt{\frac1d\sum_i x_i^2+\epsilon}}\odot g
+$$
+
+它砍掉了 LayerNorm 的**减均值**和**偏置 $b$**，只按均方根缩放。
+
+依据是经验观察：LayerNorm 起作用的主要是缩放不变性（把向量长度拉到统一尺度），中心化的贡献很小。砍掉之后少一次求均值、少一遍遍历，在几十上百层里累积起来是可观的速度收益，质量基本无损。现代 decoder-only LLM（Llama、Qwen 等）几乎都用 RMSNorm。
+
+### Pre-LN vs Post-LN
+
+残差块记作 $x_{\text{out}}=x+\operatorname{SubLayer}(\cdot)$，区别在 norm 放在残差之前还是之后：
+
+$$
+\text{Post-LN: }x_{\text{out}}=\operatorname{LayerNorm}(x+\operatorname{SubLayer}(x))
+$$
+
+$$
+\text{Pre-LN: }x_{\text{out}}=x+\operatorname{SubLayer}(\operatorname{LayerNorm}(x))
+$$
+
+- **Post-LN**（原论文）：归一化在残差**之后**。每加一层，梯度回传时都要穿过一次 LayerNorm，深层堆叠时底层梯度容易衰减，训练不稳，通常必须配小心的学习率 warmup。它的最终表示能力有时更强，但训练很敏感。
+- **Pre-LN**（现代 LLM 标配）：归一化在子层**之前**。此时残差主干 $x+\cdots$ 是一条**没有任何东西挡路的高速公路**，梯度可以近乎无损地从顶层直达底层，深层训练稳定得多，对 warmup 也不那么依赖。
+
+代价是 Pre-LN 的主干上数值会随层数累加变大，所以通常要在最后一层输出前再补一个 final norm。也有 Sandwich-LN、DeepNorm 等折中方案，试图兼顾两者。
+
+---
+
 ## 11. MoE 如何扩大参数而不同比例增加推理成本？
 
 ### 30 秒回答
@@ -594,37 +717,7 @@ $$
 
 ## 12. 高频综合追问
 
-### 为什么用 LayerNorm 而不是 BatchNorm？
-
-LayerNorm 对**单个样本内部的所有特征维**归一化，与 batch 大小、序列长度**无关**；BatchNorm 则对一个 batch 内所有样本的同一维求统计。
-
-Transformer 更适合 LayerNorm，主要因为：
-
-- NLP 序列长度不同，padding 和 token 分布会影响 batch 统计。
-- 小 batch 或自回归推理时，BatchNorm 统计不稳定或训练/推理不一致。
-- LayerNorm 对每个样本独立，适合变长序列和逐 token 推理。
-
-### 为什么当前 LLM 多使用 Pre-Norm？
-
-残差块记为 $x_{\text{out}}=x+\operatorname{SubLayer}(\cdot)$，区别在于 LayerNorm 放在残差之前还是之后：
-
-- **Post-Norm**（原论文）：$x_{\text{out}}=\operatorname{LayerNorm}(x+\operatorname{SubLayer}(x))$，归一化在残差**之后**；深层堆叠时底层**梯度易消失**、训练不稳，往往需要小心的 **LR warmup**。有时最终表示能力更强，但深层训练更敏感。
-- **Pre-Norm**（现代 LLM 标配）：$x_{\text{out}}=x+\operatorname{SubLayer}(\operatorname{LayerNorm}(x))$，归一化在子层**之前**；残差主干是一条**无阻碍的“高速公路”**，梯度可近乎**无损回传**，深层训练更稳定。
-
-### RMSNorm 和 LayerNorm 有何区别？
-
-LayerNorm 同时减均值、除标准差；RMSNorm 只按均方根缩放，不做中心化：
-
-$$
-\operatorname{RMSNorm}(x)
-=\frac{x}{\sqrt{\frac1d\sum_i x_i^2+\epsilon}}\odot g
-$$
-
-RMSNorm 更简单、计算略省，现代 decoder-only LLM 中很常见。
-
-### 为什么使用 Causal Mask？
-
-保证位置 $t$ 只能看到 $\le t$ 的 token，使训练目标和自回归推理一致，避免标签泄漏。
+归一化（LayerNorm / RMSNorm / Pre-LN vs Post-LN）见第 10.1 节，causal mask 见第 1.2 节，复杂度见第 1.3 节，FlashAttention 见第 1.4 节。
 
 ### 原始 Transformer 如何正则化和稳定训练？
 
@@ -634,19 +727,6 @@ RMSNorm 更简单、计算略省，现代 decoder-only LLM 中很常见。
 - Label Smoothing：把 one-hot 目标软化，降低过度自信并改善泛化。
 
 此外，原论文使用 Adam、学习率 warmup 和随后按步数衰减来稳定优化。它使用的不是 AdamW；weight decay 可以用于后续 Transformer 训练，但不应当作原论文配置。LayerNorm 的主要作用也是稳定优化；causal/padding mask 用于表达结构和屏蔽非法位置，它们不属于典型正则化方法。
-
-### Self-Attention 与 RNN 的复杂度如何比较？
-
-对序列长度 $n$、表示维度 $d$：
-
-- Self-Attention 每层计算复杂度约为 $O(n^2d)$，注意力矩阵显存为 $O(n^2)$。
-- RNN 每层计算复杂度约为 $O(nd^2)$，但沿 $n$ 个时间步串行。
-
-**别把 $O(n^2)$ 简单理解成“更慢”。** 每个 Q 都要和全部 $n$ 个 K 打一次分，得到 $n\times n$ 注意力矩阵，计算与显存都是 $O(n^2)$，长序列显存爆炸（$n=10^5\Rightarrow10^{10}$）。但这 $n^2$ 次打分**彼此独立、可并行**（GPU 擅长），任意两 token 间**路径长度 $O(1)$**（没有 RNN 那种长程信息瓶颈）；RNN 虽是 $O(n)$ 却**必须串行**（第 $t$ 步等第 $t-1$ 步）。所以只要显存够，Transformer 实际更快、长依赖也更好。
-
-严格的训练显存还必须计入每层激活，不能简单把 RNN 总空间写成 $O(d)$。当 $n<d$ 时，self-attention 的单层计算甚至可能更便宜；当 $n$ 很长时，$n^2$ 项成为瓶颈。
-
-例如序列从 2048 增长到 4096，标准注意力矩阵元素数约增加到 4 倍。这正是长文本训练和 prefill 容易变慢、占显存的原因。
 
 ### Cross-Entropy 在做什么？
 
@@ -662,7 +742,7 @@ $$
 
 不要假设模型调用一定返回完整 attention matrix。现代实现可能使用 FlashAttention、PyTorch SDPA 或 fused kernel，它们为了节省 $O(n^2)$ 显存，通常不会物化或返回注意力权重；即使设置 `output_attentions=True`，也可能触发慢速 eager fallback，或因具体模型实现而不受支持。
 
-**顺带点明 FlashAttention 是什么。** 它是**实现层优化，数学结果与普通 Attention 完全一致**：靠**分块（tiling）+ 在线 softmax（online softmax）+ 边算边扔**，在极快的片上 SRAM 里把 $QK^\top$、softmax、乘 $V$ 一气呵成，**不落地那张 $n\times n$ 矩阵**，因此显存从 $O(n^2)$ 降到 $O(n)$、速度提升约 2–4×（属“访存受限”问题的优化）。正因为它不显式生成 $n\times n$ 注意力矩阵，想 `output_attentions=True` 拿权重才会 OOM 或退化成慢速 eager attention。
+根因就是第 1.4 节讲的 FlashAttention：它从不物化那张 $n\times n$ 注意力矩阵，所以「把权重返回来」这个需求与它的设计直接冲突。
 
 进行可视化或干预前应：
 
@@ -685,5 +765,6 @@ $$
 | [06. LLM 基础](06-llm-foundations.md)        |
 | [07. 训练与系统](07-training-and-systems.md) |
 | [08. 对齐与 RLHF](08-alignment-and-rlhf.md)  |
+| [09. 推理与部署](09-inference-and-serving.md) |
 | [12. ML Coding](12-ml-coding.md)             |
 | [参考资料](references.md)                    |

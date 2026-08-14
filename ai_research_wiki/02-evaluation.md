@@ -2,7 +2,7 @@
 
 [返回目录](README.md)
 
-本章覆盖分类/回归指标、概率校准和模型比较。数据切分与交叉验证见 [03. 数据处理与实验方法](03-data-experiment.md)。
+本章覆盖分类/回归指标、概率校准和模型比较。
 
 ## 1. 混淆矩阵、Precision、Recall、F1 与 Accuracy
 
@@ -165,5 +165,6 @@ $$
 | [06. LLM 基础](06-llm-foundations.md)        |
 | [07. 训练与系统](07-training-and-systems.md) |
 | [08. 对齐与 RLHF](08-alignment-and-rlhf.md)  |
+| [09. 推理与部署](09-inference-and-serving.md) |
 | [12. ML Coding](12-ml-coding.md)             |
 | [参考资料](references.md)                    |

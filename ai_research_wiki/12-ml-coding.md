@@ -835,6 +835,66 @@ def beam_search(step_fn, start_token, eos_token, beam_size=3, max_len=10,
 
 ---
 
+## 6.4 Top-K / Top-P 采样
+
+### 原理与直觉
+
+Greedy 每步取最大值，输出死板且容易复读；直接按全词表采样又会偶尔抽到概率极低的垃圾 token（词表 15 万个，长尾加起来的概率不小）。两种截断办法：
+
+- **Top-K**：只留概率最高的 $K$ 个，重新归一化后采样。简单，但 $K$ 是固定的——分布尖锐时放进太多垃圾，分布平坦时又砍掉合理选项。
+- **Top-P（Nucleus）**：把 token 按概率从高到低排序，取**累计概率刚好超过 $p$** 的最小集合。候选集大小随分布自动伸缩，是它相对 Top-K 的核心优势。
+
+温度在截断之前作用于 logits：$p_i=\dfrac{\exp(z_i/T)}{\sum_j\exp(z_j/T)}$，$T<1$ 让分布更尖，$T>1$ 更平。
+
+### 实现
+
+```python
+import numpy as np
+
+
+def softmax(x):
+    x = x - np.max(x)
+    e = np.exp(x)
+    return e / e.sum()
+
+
+def top_k_sampling(logits, k=50, temperature=1.0, rng=None):
+    """logits: shape (vocab,)；返回采样得到的 token id"""
+    rng = rng or np.random.default_rng()
+    logits = np.asarray(logits, dtype=float) / max(temperature, 1e-8)
+
+    k = min(k, logits.size)
+    idx = np.argpartition(logits, -k)[-k:]      # O(V)，不必全排序
+    probs = softmax(logits[idx])                # 只在候选集内归一化
+    return int(rng.choice(idx, p=probs))
+
+
+def top_p_sampling(logits, p=0.9, temperature=1.0, rng=None):
+    """核采样：取累计概率刚好超过 p 的最小候选集"""
+    rng = rng or np.random.default_rng()
+    logits = np.asarray(logits, dtype=float) / max(temperature, 1e-8)
+
+    probs = softmax(logits)
+    order = np.argsort(probs)[::-1]             # 从大到小
+    cumsum = np.cumsum(probs[order])
+
+    cutoff = np.searchsorted(cumsum, p) + 1     # 至少保留 1 个
+    idx = order[:cutoff]
+
+    kept = probs[idx] / probs[idx].sum()        # 截断后重新归一化
+    return int(rng.choice(idx, p=kept))
+```
+
+### 关键追问
+
+- **截断后为什么必须重新归一化？** 砍掉长尾后剩下的概率加起来小于 1，不归一化就不是合法分布，`rng.choice` 也会直接报错。
+- **Top-K 一定要全排序吗？** 不用。`np.argpartition` 是 $O(V)$ 的选择算法，只保证第 $k$ 位左右分开、不保证组内有序，比 $O(V\log V)$ 的全排序快。Top-P 因为需要累计和，才不得不排序。
+- **$T\to0$ 会怎样？** 退化成 greedy（最大值的概率趋于 1）。实现上要防除零，所以写成 `max(temperature, 1e-8)`；工程里通常直接判断 `T == 0` 就走 argmax。
+- **两者能一起用吗？** 能，而且常见。工业实现一般先温度缩放，再 top-k 粗筛，再 top-p 细筛，最后采样。
+- **为什么不直接在全词表上采样？** 长尾 token 单个概率极低，但数量巨大，累积起来仍会被抽中，一旦抽到就毁掉整句。截断的本质是「砍掉不可能选项，保留合理的随机性」。
+
+---
+
 ## 7. 决策树：信息熵与信息增益
 
 决策树每一步要决定「先问哪个特征、在哪切」，标准是：切完之后子集**最纯**。
@@ -884,6 +944,121 @@ clf = SVC(kernel='rbf', C=1.0)     # RBF（高斯核）支持向量机
 clf.fit(X_train, y_train)
 y_pred = clf.predict(X_test)
 ```
+
+---
+
+## 8.1 Cosine Similarity
+
+### 原理与直觉
+
+$$
+\cos(a,b)=\frac{a\cdot b}{\|a\|\,\|b\|}
+$$
+
+分子是内积，分母把两个向量的长度除掉，所以它**只看方向、不看长度**，取值范围 $[-1,1]$。
+
+这正是它在检索和 RAG 里的价值：一篇长文档的 embedding 模长通常更大，如果直接用内积，长文档会天然占便宜；除掉模长之后，比较的才是「语义方向像不像」。
+
+和欧氏距离的关系：如果向量已做 L2 归一化，则 $\|a-b\|^2=2-2\cos(a,b)$——两者单调等价。所以向量库通常先把所有向量归一化，之后只需算内积，省掉除法。
+
+### 实现
+
+```python
+import numpy as np
+
+
+def cosine_similarity(a, b, eps=1e-8):
+    """两个一维向量的余弦相似度"""
+    a = np.asarray(a, dtype=float)
+    b = np.asarray(b, dtype=float)
+    return float(a @ b / (np.linalg.norm(a) * np.linalg.norm(b) + eps))
+
+
+def cosine_similarity_matrix(A, B, eps=1e-8):
+    """
+    A: shape (n, d)  B: shape (m, d)
+    返回 shape (n, m)，A 中每一行与 B 中每一行的相似度
+    """
+    A = np.asarray(A, dtype=float)
+    B = np.asarray(B, dtype=float)
+
+    A_norm = A / (np.linalg.norm(A, axis=1, keepdims=True) + eps)
+    B_norm = B / (np.linalg.norm(B, axis=1, keepdims=True) + eps)
+    return A_norm @ B_norm.T          # 归一化之后，内积就是余弦
+```
+
+### 关键追问
+
+- **为什么要 `eps`？** 零向量的模长是 0，直接除会得到 `nan`。检索场景里空文本、全 padding 的行都可能产生零向量。
+- **批量版为什么先归一化再矩阵乘？** 归一化是 $O(nd)$，之后一次矩阵乘就能拿到全部 $n\times m$ 对的相似度，交给 BLAS 跑；逐对循环则是 Python 层的 $O(nm)$ 次调用，慢几个数量级。
+- **余弦相似度是距离吗？** 不是。它越大越相似，与距离方向相反；常用 $1-\cos$ 当作「余弦距离」，但它不满足三角不等式，不是严格的度量。
+- **什么时候不该用它？** 当模长本身有意义时（比如用词频计数向量表示强度、或推荐里的置信度），归一化会把这部分信息扔掉。
+
+---
+
+## 8.2 Precision / Recall / F1
+
+### 原理与直觉
+
+从混淆矩阵出发（以正类为关注对象）：
+
+$$
+\text{Precision}=\frac{TP}{TP+FP},\qquad
+\text{Recall}=\frac{TP}{TP+FN},\qquad
+F_1=\frac{2PR}{P+R}
+$$
+
+一句话记法：
+
+- **Precision（查准率）**：我说是正的里面，真的有多少。分母是「我预测的正类」，管的是**别误报**。
+- **Recall（查全率）**：真正的正类里面，我抓到了多少。分母是「实际的正类」，管的是**别漏报**。
+
+两者天然对立：把阈值调低，什么都判成正类 → recall 冲到 1、precision 崩掉；阈值调高只报最有把握的 → precision 高、recall 低。**F1 是两者的调和平均**，用调和平均而不是算术平均，是因为它对偏科更狠——0.9 和 0.1 的算术平均是 0.5，F1 只有 0.18。
+
+### 实现
+
+```python
+import numpy as np
+
+
+def precision_recall(y_true, y_pred, eps=1e-12):
+    """二分类，标签为 0/1；返回 precision、recall、f1"""
+    y_true = np.asarray(y_true).astype(int)
+    y_pred = np.asarray(y_pred).astype(int)
+
+    tp = int(np.sum((y_pred == 1) & (y_true == 1)))
+    fp = int(np.sum((y_pred == 1) & (y_true == 0)))
+    fn = int(np.sum((y_pred == 0) & (y_true == 1)))
+
+    precision = tp / (tp + fp + eps)
+    recall = tp / (tp + fn + eps)
+    f1 = 2 * precision * recall / (precision + recall + eps)
+    return precision, recall, f1
+
+
+def precision_recall_multiclass(y_true, y_pred, num_classes, average='macro'):
+    """多分类：对每个类别做一次 one-vs-rest，再平均"""
+    scores = []
+    weights = []
+    for c in range(num_classes):
+        p, r, f = precision_recall(y_true == c, y_pred == c)
+        scores.append((p, r, f))
+        weights.append(np.sum(y_true == c))
+
+    scores = np.array(scores, dtype=float)
+    if average == 'macro':                       # 每类等权，小类同样重要
+        return tuple(scores.mean(axis=0))
+    weights = np.array(weights, dtype=float)     # weighted：按样本数加权
+    return tuple(scores.T @ weights / weights.sum())
+```
+
+### 关键追问
+
+- **分母为 0 怎么办？** 一个正类都没预测出来时 $TP+FP=0$。加 `eps` 只是防崩，业务上应显式约定返回 0 并告警——这种情况通常意味着阈值或训练本身有问题。sklearn 的做法是 `zero_division` 参数。
+- **为什么不用 accuracy？** 类别不平衡时它没有信息量：1% 正例的数据，全预测成负类就有 99% accuracy，而 recall 是 0。
+- **macro 和 micro 有什么区别？** macro 对每个类别单独算再取平均，**小类和大类等权**；micro 是把所有类别的 TP/FP/FN 汇总后再算，**被大类主导**（多分类单标签下 micro-F1 等于 accuracy）。关心稀有类就看 macro。
+- **precision 和 recall 谁更重要？** 取决于错误的代价：垃圾邮件过滤怕误杀正常邮件 → 重 precision；癌症筛查怕漏诊 → 重 recall。也可以用 $F_\beta$ 调整偏好，$\beta>1$ 偏 recall。
+- **和 PR-AUC 的关系？** 上面算的是**某一个阈值**下的一组数；扫遍所有阈值把 (recall, precision) 连成曲线，其下面积就是 PR-AUC，不受阈值选择影响。不平衡数据上它比 ROC-AUC 更敏感（见 [02. 模型评估与指标](02-evaluation.md)）。
 
 ---
 
@@ -954,12 +1129,13 @@ y_pred = clf.predict(X_test)
 - 稳定 Softmax、LogSoftmax、Cross-Entropy。
 - 单头/多头 Attention 与 causal mask。
 - LayerNorm、RMSNorm、RoPE。
-- Beam Search（含长度惩罚）与常见解码策略。
+- Beam Search（含长度惩罚）、Top-K / Top-P 采样与温度缩放。
 - 线性回归、Ridge、Logistic Regression。
 - K-Means（含 k-means++ 初始化）、PCA 的核心步骤。
 - 决策树的熵与信息增益（Entropy / Information Gain）。
 - LSTM 单步前向和参数量。
-- Precision、Recall、F1、ROC-AUC 的计算。
+- Precision、Recall、F1（含 macro/micro）、ROC-AUC 的计算。
+- Cosine Similarity（单对与批量矩阵版）。
 
 评价手写代码时不只看结果，还要检查 shape、时间/空间复杂度、边界条件、数值稳定性和梯度正确性。
 
@@ -975,5 +1151,6 @@ y_pred = clf.predict(X_test)
 | [06. LLM 基础](06-llm-foundations.md)        |
 | [07. 训练与系统](07-training-and-systems.md) |
 | [08. 对齐与 RLHF](08-alignment-and-rlhf.md)  |
+| [09. 推理与部署](09-inference-and-serving.md) |
 | [12. ML Coding](12-ml-coding.md)             |
 | [参考资料](references.md)                    |

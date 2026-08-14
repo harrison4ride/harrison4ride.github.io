@@ -11,12 +11,13 @@
 
 ## 第二部分：NLP 与大模型
 
-| 章节                                         | 内容                                                                                     |
-| -------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| [05. NLP、RNN 与词向量](05-nlp-rnn.md)       | RNN/LSTM、梯度问题、Attention、Language Model、N-Gram、Word2Vec、Stemming/Lemmatization  |
-| [06. LLM 基础](06-llm-foundations.md)        | Transformer、BERT、位置编码、RoPE、MHA/MQA/GQA、架构、Scaling Laws、解码、Tokenizer、MoE |
-| [07. 训练与系统](07-training-and-systems.md) | 并行策略                                                                                 |
-| [08. 对齐与 RLHF](08-alignment-and-rlhf.md)  | SFT、PPO、DPO、GRPO、Reward Hacking                                                      |
+| 章节                                          | 内容                                                                                            |
+| --------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| [05. NLP、RNN 与词向量](05-nlp-rnn.md)        | RNN/LSTM、梯度问题、Attention、Language Model、N-Gram、Word2Vec、Stemming/Lemmatization         |
+| [06. LLM 基础](06-llm-foundations.md)         | 自注意力、Causal Mask、复杂度、FlashAttention、RoPE、MHA/MQA/GQA、Norm、SwiGLU、Weight Tying、BERT、Tokenizer、MoE、Scaling Laws |
+| [07. 训练与系统](07-training-and-systems.md)  | 预训练、SFT、蒸馏、合成数据、并行策略                                                          |
+| [08. 对齐与 RLHF](08-alignment-and-rlhf.md)   | RM、PPO、DPO、GRPO、KL 与 Reward Hacking、ORM vs PRM、RL for Reasoning                         |
+| [09. 推理与部署](09-inference-and-serving.md) | Prefill/Decode、解码策略、Best-of-N、KV Cache 优化、Continuous Batching、投机解码、量化        |
 
 ## 第三部分：应用系统与工程
 
