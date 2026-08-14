@@ -441,4 +441,17 @@ running -> run
 
 > Stemming 是按规则砍词尾，快但粗；lemmatization 是按语言学还原原词，准但慢。
 
-[返回目录](README.md)
+# 目录
+
+| 章节                                         |
+| -------------------------------------------- |
+| [00. 机器学习核心概念](00-ml-concepts.md)    |
+| [01. 基础与神经网络机制](01-foundations.md)  |
+| [02. 模型评估与指标](02-evaluation.md)       |
+| [04. 经典机器学习](04-classical-ml.md)       |
+| [05. NLP、RNN 与词向量](05-nlp-rnn.md)       |
+| [06. LLM 基础](06-llm-foundations.md)        |
+| [07. 训练与系统](07-training-and-systems.md) |
+| [08. 对齐与 RLHF](08-alignment-and-rlhf.md)  |
+| [12. ML Coding](12-ml-coding.md)             |
+| [参考资料](references.md)                    |

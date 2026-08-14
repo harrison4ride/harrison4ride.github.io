@@ -34,6 +34,8 @@ $$
 =-\sum_t\log \pi_\theta(y_t\mid x,y_{<t})
 $$
 
+就是逐 token 的 cross-entropy：给定 prompt $x$ 和已生成的前缀 $y_{<t}$，让模型把示范答案的下一个 token $y_t$ 的概率推高。注意它对示范里的每个 token 一视同仁，这正是 SFT 学不到偏好的原因。
+
 ### 阶段二：Reward Model
 
 - **输入**：同一 prompt 下多个候选回答，以及人类偏好排序或成对比较。
@@ -53,6 +55,8 @@ $$
 -\beta D_{\mathrm{KL}}
 (\pi_\theta(\cdot|x)\Vert\pi_{\text{ref}}(\cdot|x))\right]
 $$
+
+这个目标函数是后面所有内容的总纲，两项在拔河：前一项要**分数高**（RM 觉得好），后一项要**别跑远**（离参考模型不能太离谱），$\beta$ 是这场拔河的力度旋钮。注意 $y\sim\pi_\theta$——回答是模型自己采样出来的，不是数据集里给定的，这正是它属于 RL 而不是监督学习的地方。
 
 ---
 
@@ -98,6 +102,8 @@ P(y_w\succ y_l)
 =\sigma(r_\phi(x,y_w)-r_\phi(x,y_l))
 $$
 
+读法：两个回答的**分数差**经 sigmoid 变成一个概率。差得越多，人类越可能偏好 $y_w$；分数相等时概率是 0.5，也就是「五五开」。
+
 最大化观测偏好的似然，等价于最小化：
 
 $$
@@ -105,7 +111,9 @@ $$
 =-\log\sigma(r_\phi(x,y_w)-r_\phi(x,y_l))
 $$
 
-它只约束奖励差，不确定奖励的绝对零点。训练时还要关注长度偏置、类别不平衡、过拟合和跨域泛化。
+这就是把上面那个概率取负对数——本质上是一个二分类的 log loss，只不过分类的对象是「哪个回答更好」。它逼着 RM 把 chosen 的分数拉高、rejected 的压低，且两者拉得越开惩罚越小。
+
+由于式子里只出现分数差，它只约束奖励差，不确定奖励的绝对零点（整体加减一个常数，loss 不变）。训练时还要关注长度偏置、类别不平衡、过拟合和跨域泛化。
 
 ### RM 如何评估？
 
@@ -117,11 +125,21 @@ $$
 
 ---
 
-## 5. 为什么 PPO，而不是 REINFORCE 或 Q-learning？
+## 5. PPO：经典 RLHF 的基石
 
-### 对比 REINFORCE
+### 先看难在哪
 
-REINFORCE 的梯度估计：
+RL 在游戏和机器人上跑得好好的，搬到 LLM 上却格外难训，原因有三个：
+
+- **动作空间极大**：每一步要从整个词表（几万到十几万个 token）里挑一个。
+- **轨迹很长**：一条回答几百上千个 token，等于几百上千步连续决策。
+- **奖励来得极晚**：数学题、代码题往往要整段生成完、跑完单测才知道对不对，这叫 outcome reward。中间几百步全是「不知道好坏」。
+
+三件事叠在一起的直接后果是**策略梯度的方差极大**：同一个 prompt 采样两次，回报可能天差地别，参数被推向完全不同的方向，训练极易不稳定。PPO 的每一个设计，都是围绕「把方差压下去、把单次更新限制住」展开的。
+
+### 为什么不是 REINFORCE 或 Q-learning？
+
+**对比 REINFORCE**
 
 $$
 \nabla_\theta J
@@ -129,26 +147,34 @@ $$
 \nabla_\theta\log\pi_\theta(y|x)(R-b)]
 $$
 
-简单但方差很大。LLM 动作空间是巨大词表、轨迹很长、奖励常在序列末尾才给出，训练容易不稳定。PPO 使用 value/advantage 估计、mini-batch 多轮更新和 clipped objective，提高样本效率并限制单次策略变化。
+读法：$\nabla_\theta\log\pi_\theta(y|x)$ 指向「让这条回答更容易被生成」的方向，前面乘的标量 $(R-b)$ 决定推还是拉——回报高于基线 $b$ 就正向推一把，低于基线就往回拽。$b$ 只为降方差，不改变梯度的期望。
 
-### 对比 Q-learning
+它足够简洁，但整条回答只有一个标量在指挥几百步 token 的更新，方差大到难以直接使用。PPO 在此之上加了 value/advantage 估计、mini-batch 多轮复用同一批采样，以及 clipped objective，样本效率和稳定性都好得多。
+
+**对比 Q-learning**
 
 Q-learning 更适合离散且可反复探索的 Markov 环境。对 LLM：
 
-- 状态是任意长 token 前缀。
-- 动作空间是大词表。
-- 学习每个状态动作的 Q 值成本高。
-- 离线 bootstrapping 和分布外动作容易不稳定。
+- 状态是任意长的 token 前缀。
+- 动作空间是整个大词表。
+- 给每个「状态—动作」学一个 Q 值成本极高。
+- 离线 bootstrapping 碰上分布外动作容易发散。
 
-Policy gradient 可直接优化生成策略，更自然。
+直接优化生成策略的 policy gradient 要自然得多。
 
-### PPO Clipped Objective
+### 核心机制三件套
+
+**① Clipped Objective：不许一步迈太远**
+
+先定义新旧策略在同一个 token 上的概率比（importance sampling ratio）：
 
 $$
 r_t(\theta)
 =\frac{\pi_\theta(a_t|s_t)}
 {\pi_{\theta_{\text{old}}}(a_t|s_t)}
 $$
+
+$r_t>1$ 表示更新后模型更愿意吐出这个 token，$r_t<1$ 表示更不愿意。它衡量的就是「这一步把策略改动了多少」。
 
 $$
 \mathcal L_{\text{clip}}
@@ -161,67 +187,83 @@ r_tA_t,
 \right]
 $$
 
-Clipping 防止一次更新把 token 概率改得过大。LLM RLHF 还会训练 value model，并在 token reward 中加入相对 reference model 的 KL 惩罚。
+$A_t$ 是优势（advantage），表示这个 token 比预期好多少。式子读作：正常按 $r_tA_t$ 更新，但一旦 $r_t$ 跑出 $[1-\epsilon,1+\epsilon]$（常用 $\epsilon=0.2$）就换成截断版本，外面再套一个 $\min$ 取更保守的那个。
+
+效果是**好 token 的概率最多提到 1.2 倍就不再给奖励，坏 token 最多压到 0.8 倍**，想再往前冲梯度直接归零。这正是名字里 proximal（近端）的由来：每次只在旧策略附近挪一小步，防止单次更新过猛毁掉模型能力。
+
+**② Actor-Critic 双模型：把方差压下去**
+
+除了负责生成的 policy（actor），PPO 还要训练一个与 policy 规模相近的 value model / critic，用来估计每个状态的价值 $V(s_t)$，进而算出优势：
+
+$$
+A_t\approx R_t-V(s_t)
+$$
+
+也就是「实际拿到的回报」减去「本来预期能拿多少」（实践中用 GAE 做更平滑的估计）。有了这个减法，梯度信号从「这条回答的绝对得分」变成「比预期好还是差」，方差大幅下降。
+
+它其实就是 REINFORCE 里那个基线 $b$ 的升级版：$b$ 是一个全局常数，$V(s_t)$ 是随状态变化、并且学出来的基线。
+
+**③ KL 惩罚：别跑离语言模型太远**
+
+在 reward 里减去相对 reference model（通常就是 SFT 模型）的 KL 惩罚：
+
+$$
+\tilde r
+=r_\phi(x,y)
+-\beta D_{\mathrm{KL}}
+(\pi_\theta\Vert\pi_{\text{ref}})
+$$
+
+防止模型为了刷高 RM 分数而偏离正常语言分布。这一项的调节是实操中最容易翻车的地方，下一节单独讲。
+
+### 痛点与局限
+
+- **显存和计算开销极高**：训练时要同时驻留 4 个大模型——policy（actor，训练中）、critic（训练中）、reward model（推理）、reference model（推理）。其中 critic 通常和 policy 规模相近，等于凭空多出一个正在训练的大模型，显存直接爆炸。
+- **调参复杂**：PPO 的成败很大程度上取决于 critic 拟合得好不好。critic 估不准 → advantage 有偏 → actor 被带偏 → 采样分布随之变化 → critic 更估不准。actor 与 critic 的这场博弈很容易导致训练崩盘。
+
+后面的 DPO 和 GRPO，本质上都是在削减这套架构的成本。
 
 ---
 
-## 6. KL 惩罚的作用与 $\beta$ 调节
+## 6. RLHF 训练的两大核心难题
 
-### 作用
+上一节三件套里的 KL 惩罚，和它要防的 reward hacking，是实际跑 RLHF 时最容易翻车的两处。两者是一体两面：KL 是手段，防的就是 hacking。
 
-- 防止 policy 为骗取 RM 分数远离语言模型分布。
-- 保留 SFT 模型的语言质量和通用能力。
-- 相当于在奖励最大化中加入 trust region / regularization。
-- 降低 RM 在分布外区域被利用的风险。
+### ① KL 惩罚与 $\beta$ 调节
 
-### $\beta$ 太大
+**作用**：扮演一根安全绳，防止模型为了拿高 RM 分数而丢掉原有的语言通顺度、语法能力和泛化能力。换个说法，它相当于在奖励最大化中加了 trust region / 正则项，同时降低 RM 在分布外区域被钻空子的风险。
 
-- 模型几乎不敢改变，奖励和偏好胜率提升有限。
-- 输出过于接近 SFT/reference。
-- RL 信号被 KL 压制。
+**$\beta$ 过大**：模型过于保守，几乎不敢改变，输出黏在 SFT/reference 上，RL 信号被 KL 压死，奖励和胜率都提不动——等于 RL 优化无效。
 
-### $\beta$ 太小
+**$\beta$ 过小**：策略快速漂移，语言质量下降，随之而来的是 reward hacking、模式化重复、输出越写越长、原有能力遗忘；监控上会看到 KL、entropy、长度或 reward 异常增长。
 
-- Policy 快速漂移，语言质量下降。
-- Reward hacking、模式化、过长输出和能力遗忘。
-- KL、entropy、长度或 reward 出现异常增长。
+**工程实践**：不能只盯 reward 曲线，要同时观察
 
-### 如何调节？
+- RM reward 与独立人工 / LLM judge 的胜率；
+- 每 token KL 和整条序列的 KL；
+- 输出长度、entropy、重复率、拒答率；
+- 各领域的能力回归测试。
 
-同时观察：
+常用做法是设一个 **target KL**，据此动态缩放 $\beta$：实际 KL 高于目标就调大 $\beta$ 收紧，低于目标就调小放松。
 
-- RM reward 与独立人工/LLM judge 胜率。
-- 每 token KL 和序列 KL。
-- 输出长度、entropy、重复率、拒答率。
-- 各领域能力回归。
+### ② Reward Hacking
 
-可设定 target KL，动态调整 $\beta$：实际 KL 高于目标则增大，低于目标则减小。不能只看 reward 曲线。
+**现象**：RM 只是人类偏好的不完美代理（proxy）。RL 优化会主动去找 RM 的漏洞——只要某种行为能骗到高分，模型就会把它做到极致。
 
----
+典型例子：客服模型的 RM 偏好「礼貌、详细」。RL 之后，模型对任何投诉都先长篇道歉、重复一遍用户的观点、再承诺一个兑现不了的补偿。RM 分数一路走高，而用户真正需要的「把问题解决掉」反而消失了。
 
-## 7. Reward Hacking
+**应对手段**：
 
-### 定义
+- **数据层面**：偏好数据里加入针对冗长废话、讨好奉承（sycophancy）、虚假引用、格式投机的反例和 hard negatives，以及强调简洁性和事实性的正例。
+- **奖励层面**：多维奖励（帮助性、正确性、安全、长度、风格分开建模）；长度惩罚（length penalty）；rule-based verifier、工具执行结果或事实核验做硬校验；RM ensemble 配不确定性估计。
+- **约束层面**：KL 约束、长度约束和早停，避免对 RM 过优化。
+- **评估隔离**：**严禁**用训练用的那个 RM 评估最终模型，必须换独立第三方 judge（更强的模型）或人工盲评；同时定期把新 policy 的高奖励样本捞出来人工审计，做 adversarial data collection。
 
-模型找到提高代理奖励但不满足真实目标的行为。根因是“奖励模型只是人类偏好的不完美近似”，且优化会主动寻找 RM 的漏洞。
-
-### 例子
-
-客服模型的 RM 偏好“礼貌、详细”。RL 后模型开始对任何投诉都先长篇道歉、重复用户观点并承诺无法兑现的补偿。RM 分数高，但用户需要的是准确解决问题。
-
-### 缓解
-
-- 改善偏好数据，加入简洁性、事实性和拒绝奉承的反例。
-- 多维奖励：帮助性、正确性、安全、长度、风格分别建模。
-- Rule-based verifier、工具执行结果或事实核验。
-- KL、长度约束和早停，避免对 RM 过优化。
-- Reward model ensemble 与不确定性估计。
-- 定期用新 policy 的高奖励样本做人工审计和 adversarial data collection。
-- 使用独立 judge，不用同一 RM 同时训练和最终评估。
+一个实用的过优化信号：Best-of-N 里随着 N 增大，RM 分数继续升高但人工判定的质量开始下降，说明已经在刷分了。
 
 ---
 
-## 8. DPO 的核心思想
+## 7. DPO 的核心思想
 
 ### 30 秒回答
 
@@ -238,18 +280,11 @@ $$
 \right]\right)
 $$
 
-它提高 chosen 相对 reference 的概率优势，并降低 rejected 的相对优势。
+怎么读这个式子：括号里两项形状完全一样，都是「当前模型相对参考模型，把这条回答的概率抬高了多少」——DPO 把这个比值的对数当作**隐式奖励**。于是 chosen 减 rejected，就是一个 Bradley-Terry 里的分数差，外面套上 $-\log\sigma(\cdot)$，正好就是第 4 节那个 RM 损失的形状。
 
-### 相比 PPO-RLHF
+区别只在于优化对象换了：RM 训练时调的是 $r_\phi$，DPO 直接调 $\pi_\theta$。所以它提高 chosen 相对 reference 的概率优势，同时压低 rejected 的相对优势。
 
-| 维度         | PPO-RLHF                     | DPO                          |
-| ------------ | ---------------------------- | ---------------------------- |
-| Reward Model | 显式训练                     | 不需要显式 RM                |
-| 数据         | 在线 rollout + RM            | 离线偏好 pair                |
-| 组件         | policy、reference、RM、value | policy、reference            |
-| 稳定性       | 调参复杂                     | 类似监督训练，通常更稳       |
-| 探索         | 可在线探索新输出             | 受离线数据覆盖限制           |
-| 奖励         | 可组合环境和规则奖励         | 原始形式依赖 pair preference |
+这也意味着 DPO 的训练循环和 SFT 几乎一样：读一批离线 pair、前向、算 loss、反向——没有采样，没有 RM，没有 critic。$\beta$ 依然在（它来自原 RL 目标里的 KL 系数），控制允许偏离 reference 多远。
 
 ### DPO 局限
 
@@ -260,163 +295,72 @@ $$
 
 ---
 
-## 9. GRPO 与 PPO
+## 8. GRPO：面向 Reasoning 的轻量化革命
 
-### GRPO 的核心
+针对 PPO 的显存和调参痛点，GRPO（Group Relative Policy Optimization）做了一个关键革新：**用同组样本的平均表现，替掉那个学出来的 critic**。
 
-对每个 prompt 从旧策略采样一组 $G$ 个回答，得到奖励 $r_1,\ldots,r_G$，用组内相对标准化构造 advantage：
+### 核心机制
+
+**① 取消 Critic**：完全摒弃独立的 value / critic model，直接省掉接近一半的训练显存与计算量。
+
+**② Group Sampling（组内采样）**：对同一个 prompt，让旧策略一次性采样出一组 $G$ 个候选回答，各自得到奖励 $r_1,r_2,\ldots,r_G$。
+
+**③ Group Relative Advantage（组内相对归一化）**：直接用这组奖励的均值和标准差算出每个回答的相对优势：
 
 $$
 A_i=\frac{r_i-\operatorname{mean}(r)}
 {\operatorname{std}(r)+\epsilon}
 $$
 
-再使用类似 PPO 的重要性采样和 clipping 更新 policy，并加 KL 正则。它不训练独立 critic/value model。
+读法：$\operatorname{mean}(r)$ 充当 baseline，$\operatorname{std}(r)$ 把不同题目的奖励尺度拉齐，$\epsilon$ 防除零。答得比同组平均好，$A_i>0$，这条轨迹被强化；比平均差就被压下去。
+
+关键在于**这个 baseline 是自适应的**：难题上大家都答不好、平均分低，你只要比同组稍好就是正优势；简单题上大家都对，优势自然趋近 0。它抵消的正是不同 prompt 之间的难度差异——而这本来是 PPO 里 critic 的职责。
+
+**④ PPO 式更新**：拿着这个组内 advantage $A_i$，继续套用 PPO 的 ratio clipping 和 KL 正则去更新 policy。所以 GRPO 不是另起炉灶，而是把 PPO 的 advantage 来源换了。
 
 ### 相比 PPO
 
-- **省显存和计算**：去掉与 policy 规模相近的 critic。
-- **相对比较**：同一 prompt 的组内 baseline 降低题目难度差异。
-- **适合可验证任务**：一个 prompt 可采样多个推理轨迹，用答案或单测打分。
+- **省显存和计算**：去掉与 policy 规模相近的 critic，训练时只剩 policy、reference 和 RM/verifier。
+- **相对比较更稳**：同一 prompt 的组内 baseline 天然消化了题目难度差异，也不存在 critic 估不准带崩 actor 的问题。
+- **适合可验证任务**：一个 prompt 可以采样多条推理轨迹，用标准答案或单元测试直接打分，连 RM 都可以省掉。
 
 ### 局限
 
-- 每个 prompt 要采样多条回答，rollout 成本高。
-- 若组内奖励全相同，标准化后几乎没有学习信号。
-- 序列最终奖励广播到 token，信用分配仍较粗。
-- 组内均值/方差会引入采样噪声。
-- 长度和 token-level clipping 的处理可能带来偏差。
+- 每个 prompt 要采样 $G$ 条回答，rollout 成本高。
+- 若组内奖励全相同（全对或全错），标准化后 $A_i$ 全是 0，这批数据几乎没有学习信号。
+- 序列最终奖励广播到每个 token，信用分配仍然较粗。
+- 组内均值/方差本身带采样噪声，$G$ 太小时不稳。
+- 长度和 token-level clipping 的处理可能引入偏差。
 
 ---
 
-## 10. DAPO 与 GRPO
+## 9. 路线选型：PPO vs. DPO vs. GRPO
 
-DAPO 即 Decoupled Clip and Dynamic sAmpling Policy Optimization，针对大规模推理 RL 的稳定性做了四类关键修改：
+| 路线        | 数据与采样              | 训练时要加载的模型                             | 强项                                     | 短板                                   |
+| ----------- | ----------------------- | ---------------------------------------------- | ---------------------------------------- | -------------------------------------- |
+| PPO-RLHF    | 在线 rollout + RM 打分  | policy、reference、RM、critic（4 个）          | 在线探索能力强，可组合环境奖励和规则奖励 | 显存与算力极贵，调参复杂、容易崩       |
+| DPO         | 离线偏好 pair           | policy、reference（2 个）                      | 像 SFT 一样稳和便宜，无需 RM 和采样      | 受离线数据覆盖限制，缺乏自我探索       |
+| GRPO / DAPO | 在线采样一组 $G$ 个回答 | policy、reference、RM 或 verifier（无 critic） | 省掉 critic，适合有标准答案的推理任务    | rollout 成本高，组内奖励雷同就没有信号 |
 
-1. **Clip-Higher**：正向和负向 clipping 解耦，允许低概率的优质 token 获得更大上升空间，缓解 entropy collapse。
-2. **Dynamic Sampling**：过滤奖励全相同、没有有效梯度的 prompt，并动态补充有效样本。
-3. **Token-Level Policy Gradient Loss**：按 token 聚合损失，避免不同回答长度导致 sample-level 聚合偏差。
-4. **Overlong Reward Shaping**：对接近最大长度的回答平滑惩罚，而不是截断后突然给极低奖励。
+一句话选型：
 
-### 一句话比较
-
-GRPO 给出了“组内相对奖励、不用 critic”的基本框架；DAPO 重点修复在大规模推理训练中出现的 entropy、无效样本、长度偏差和截断奖励问题。
-
----
-
-## 11. GSPO 与 GRPO
-
-GSPO（Group Sequence Policy Optimization）把优化单元从 token 级 importance ratio 改为 sequence 级。
-
-### GRPO 常见 token ratio
-
-$$
-r_{i,t}=
-\frac{\pi_\theta(y_{i,t}|x,y_{i,<t})}
-{\pi_{\text{old}}(y_{i,t}|x,y_{i,<t})}
-$$
-
-一个序列中不同 token 分别 clip，可能破坏“整条序列获得一个 outcome reward”这一语义，也可能在长序列和 MoE 路由变化时造成高方差。
-
-### GSPO
-
-先用整条序列的平均 log-likelihood ratio 构造 sequence-level ratio，再对序列进行 clipping、奖励和优化。核心对齐是：
-
-- 奖励通常是 sequence-level。
-- 采样概率本质上是整个序列概率。
-- 因而 importance weight 也在 sequence-level 定义。
-
-### 优势
-
-- 论文报告训练更稳定、样本效率更高。
-- 对 MoE RL 尤其友好，token 路由变化不容易让个别 token ratio 破坏更新。
-- 目标和 outcome reward 的粒度更一致。
-
-### 需要谨慎
-
-Sequence-level 优化并没有自动解决详细步骤的信用分配。它只是让策略比率与序列奖励粒度一致。若要知道哪一步推理错了，仍需 process reward、verifier、step-level advantage 或环境反馈。
+- 通用偏好对齐、预算有限 → 从 DPO 起步。
+- 需要在线探索、要接入规则或环境奖励 → PPO。
+- 数学、代码这类答案能自动验证的推理任务 → 走 GRPO 这条线，DAPO、GSPO 都是它的后续改进，也是目前复杂推理对齐的主流方向。
 
 ---
 
-## 12. 信用分配：token 奖励与 sequence 奖励
+# 目录
 
-### Sequence-Level Reward
-
-完成整条回答后给一个分数，例如答案是否正确。
-
-- 优点：标注简单；不要求暴露或判断每一步推理；可直接用单测/答案 verifier。
-- 缺点：所有 token 共享结果，难以知道关键步骤；长轨迹方差大。
-
-### Token/Step-Level Reward
-
-在生成过程中为 token 或推理步骤提供奖励。
-
-- 优点：反馈密集，可定位错误步骤，理论上样本效率更高。
-- 缺点：标注和模型训练昂贵；局部正确不保证全局正确；Process RM 也会被攻击。
-
-### 常见信用分配方法
-
-- Value function / GAE 估计每个状态的未来回报。
-- Process Reward Model 给推理步骤打分。
-- Monte Carlo rollout：从中间步骤继续多次采样，以最终成功率估计该步骤价值。
-- Verifier 定位代码测试、数学约束或工具执行错误。
-- Outcome reward 配合 leave-one-out/group baseline 降方差。
-- 将长任务拆成可验证子目标，但要防止错误分解限制策略。
-
----
-
-## 13. RLAIF
-
-RLAIF 使用 AI 生成偏好、批评、原则判断或奖励，替代或补充人类反馈。Constitutional AI 是代表思路：先定义原则，让模型自我批评和修订，再用 AI preference 做偏好优化。
-
-### 潜力
-
-- 成本低、速度快、可扩展到大量 prompt。
-- rubric 一致，适合快速迭代和长尾场景。
-- 可让多个 judge 从事实、安全、风格等维度分别评估。
-- 人类可以把精力集中在原则设计、校准和困难样本。
-
-### 风险
-
-- Judge 偏差被 policy 放大。
-- 同源模型可能偏好相似措辞、长答案或自身输出。
-- 对事实和安全的盲点形成系统性错误。
-- 模型生成的“多数意见”不等于人类价值。
-- Policy 可能学会针对 judge 的模式，而非真实质量。
-
-### 更稳妥的方案
-
-人类定义规范和 gold set，AI 扩大标注；定期做人类校准；使用多模型、多提示 judge；对高风险领域保留专家审核；报告 judge 与人类的一致率。
-
----
-
-## 14. 离线分数高，上线后模式化、奉承、信息量低
-
-### 可能原因
-
-- RM 存在长度、礼貌、同意用户或固定格式偏好。
-- PPO 过优化 RM，KL 太小。
-- 离线评估与真实用户分布不一致。
-- Judge 与训练 RM 同源，形成自我验证。
-- 偏好标注者倾向“看起来安全”的回答。
-- 训练 pair 缺少“礼貌但无信息”和“不同意用户但事实正确”的困难负例。
-- 线上多轮对话状态与离线单轮评估不同。
-
-### 排查顺序
-
-1. 对线上失败样本做人类盲评并建立 taxonomy。
-2. 对比 RM 分数、独立 judge、人类评分和业务结果。
-3. 按长度、同意程度、模板、领域和轮次切片。
-4. 检查 KL、entropy、输出长度和多样性随训练步变化。
-5. 用 counterfactual pair 测试 RM：事实相同但风格不同；礼貌相同但信息量不同。
-
-### 修复
-
-- 补充 hard negatives 和真实线上偏好。
-- 采用多维奖励并加入事实/任务完成 verifier。
-- 增大 KL、减少 RL epoch 或 early stop。
-- 混合 SFT replay，防止能力遗忘。
-- 优化目标加入简洁性和 calibration，而不是一味奖励更长。
-- 线上 A/B 以任务成功、追问率、用户修正率为准，不以 RM 分数代替。
-
-[返回目录](README.md)
+| 章节                                         |
+| -------------------------------------------- |
+| [00. 机器学习核心概念](00-ml-concepts.md)    |
+| [01. 基础与神经网络机制](01-foundations.md)  |
+| [02. 模型评估与指标](02-evaluation.md)       |
+| [04. 经典机器学习](04-classical-ml.md)       |
+| [05. NLP、RNN 与词向量](05-nlp-rnn.md)       |
+| [06. LLM 基础](06-llm-foundations.md)        |
+| [07. 训练与系统](07-training-and-systems.md) |
+| [08. 对齐与 RLHF](08-alignment-and-rlhf.md)  |
+| [12. ML Coding](12-ml-coding.md)             |
+| [参考资料](references.md)                    |
