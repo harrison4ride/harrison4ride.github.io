@@ -1062,95 +1062,18 @@ def precision_recall_multiclass(y_true, y_pred, num_classes, average='macro'):
 
 ---
 
-## 9. 面试时主动指出的坑
+## 目录
 
-### KMeans
-
-- 空簇处理。
-- 初始化敏感，需要多次重启或 k-means++。
-- 特征尺度会影响欧氏距离。
-- `np.all(centroids == new_centroids)` 对浮点数不稳，应使用 tolerance。
-
-### Logistic Regression
-
-- Sigmoid 和 log loss 数值稳定。
-- 阈值不一定为 0.5。
-- 类别不平衡时 accuracy 不可靠。
-- 截距通常不正则化。
-
-### Linear Regression
-
-- 不要显式求逆。
-- 共线性导致 $X^\top X$ 病态。
-- 训练前检查 shape，尤其是 $y$ 是 `(n,)` 还是 `(n, 1)`。
-
-### Attention
-
-- Mask 语义必须清楚。
-- 注意 softmax 的 axis。
-- Q/K/V shape 必须能矩阵乘。
-- 标准 attention 有 $O(n^2)$ 注意力矩阵。
-
----
-
-## 10. 手写与实现题通用检查清单
-
-### 张量维度
-
-每一步写出 shape，特别关注：
-
-- batch 维和 sequence 维的顺序。
-- 矩阵乘法的收缩维。
-- broadcasting 是否符合语义。
-- `view/reshape/transpose` 后内存是否 contiguous。
-
-### 数值稳定性
-
-- Softmax 使用减最大值或 `logsumexp`。
-- 概率损失优先接收 logits 的 fused 实现。
-- 除法加入有依据的 $\epsilon$，同时测试全零或极小分母。
-- 监控 NaN/Inf、梯度范数和混合精度溢出。
-- 稀疏更新要处理重复 index 的累加语义，而不只是“索引碰撞”。
-
-### Python / PyTorch 工程陷阱
-
-- 文件名不要遮蔽标准库或第三方包，例如 `torch.py`、`random.py`。
-- 变量名不要覆盖导入模块或函数。
-- 检查 train/eval mode、device、dtype 和随机种子。
-- 不要用能运行的广播掩盖 shape bug。
-- 用 `torch.autograd.gradcheck` 对自定义算子做有限差分检查。
-
----
-
-## 11. 常见手写题清单
-
-应能在不调用高级封装的情况下实现并解释：
-
-- 稳定 Softmax、LogSoftmax、Cross-Entropy。
-- 单头/多头 Attention 与 causal mask。
-- LayerNorm、RMSNorm、RoPE。
-- Beam Search（含长度惩罚）、Top-K / Top-P 采样与温度缩放。
-- 线性回归、Ridge、Logistic Regression。
-- K-Means（含 k-means++ 初始化）、PCA 的核心步骤。
-- 决策树的熵与信息增益（Entropy / Information Gain）。
-- LSTM 单步前向和参数量。
-- Precision、Recall、F1（含 macro/micro）、ROC-AUC 的计算。
-- Cosine Similarity（单对与批量矩阵版）。
-
-评价手写代码时不只看结果，还要检查 shape、时间/空间复杂度、边界条件、数值稳定性和梯度正确性。
-
-# 目录
-
-| 章节                                         |
-| -------------------------------------------- |
-| [00. 机器学习核心概念](00-ml-concepts.md)    |
-| [01. 基础与神经网络机制](01-foundations.md)  |
-| [02. 模型评估与指标](02-evaluation.md)       |
-| [04. 经典机器学习](04-classical-ml.md)       |
-| [05. NLP、RNN 与词向量](05-nlp-rnn.md)       |
-| [06. LLM 基础](06-llm-foundations.md)        |
-| [07. 训练与系统](07-training-and-systems.md) |
-| [08. 对齐与 RLHF](08-alignment-and-rlhf.md)  |
+| 章节                                          |
+| --------------------------------------------- |
+| [00. 机器学习核心概念](00-ml-concepts.md)     |
+| [01. 基础与神经网络机制](01-foundations.md)   |
+| [02. 模型评估与指标](02-evaluation.md)        |
+| [04. 经典机器学习](04-classical-ml.md)        |
+| [05. NLP、RNN 与词向量](05-nlp-rnn.md)        |
+| [06. LLM 基础](06-llm-foundations.md)         |
+| [07. 训练与系统](07-training-and-systems.md)  |
+| [08. 对齐与 RLHF](08-alignment-and-rlhf.md)   |
 | [09. 推理与部署](09-inference-and-serving.md) |
-| [12. ML Coding](12-ml-coding.md)             |
-| [参考资料](references.md)                    |
+| [12. ML Coding](12-ml-coding.md)              |
+| [参考资料](references.md)                     |
