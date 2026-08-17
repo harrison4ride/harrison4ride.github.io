@@ -207,42 +207,87 @@ def logistic_regression_train(X, y, lr=0.1, max_iter=1000):
 
 ### 数值稳定实现
 
+#### Sigmoid：公式与它的坑
+
+$$
+\sigma(z)=\frac{1}{1+e^{-z}}
+$$
+
+照着这个式子直接写 `1 / (1 + np.exp(-z))`，当 $z$ 是很大的负数（比如 $-1000$）时，$e^{-z}=e^{1000}$ 直接溢出成 `inf`，得到 `inf` 甚至 `nan`。
+
+解决办法是分子分母同乘 $e^{z}$，得到一个等价形式：
+
+$$
+\sigma(z)=\frac{1}{1+e^{-z}}=\frac{e^{z}}{1+e^{z}}
+$$
+
+两个写法**数学上完全相同，数值行为却相反**：
+
+- $z\ge0$ 时用左边，指数部分是 $e^{-z}\le1$，安全。
+- $z<0$ 时用右边，指数部分是 $e^{z}<1$，也安全。
+
+所以按符号分两支，保证**永远只对负数取指数**。
+
 ```python
 import numpy as np
 
 
 def sigmoid(z):
     z = np.asarray(z)
-    out = np.empty_like(z, dtype=float)
+    out = np.empty_like(z, dtype=float)   # 创建一个和 z 维度相同、用来装结果的空数组
 
-    pos = z >= 0
-    neg = ~pos
+    pos = z >= 0    # 找到所有 >= 0 的位置（布尔掩码 Boolean Mask）
+    neg = ~pos      # 找到所有 < 0 的位置（按位取反）
 
+    # 1. 正数区域：用 1 / (1 + exp(-z))，此时 exp(-z) <= 1，不会溢出
     out[pos] = 1.0 / (1.0 + np.exp(-z[pos]))
+
+    # 2. 负数区域：用 exp(z) / (1 + exp(z))，此时 exp(z) < 1，同样不会溢出
     exp_z = np.exp(z[neg])
     out[neg] = exp_z / (1.0 + exp_z)
+
     return out
+```
 
+#### Binary Cross-Entropy：同一个坑的另一面
 
+原始公式（记 $p=\sigma(z)$）：
+
+$$
+\mathcal L=-\big[y\log p+(1-y)\log(1-p)\big]
+$$
+
+问题在于先求出 $p$ 再取对数：$p$ 一旦被浮点舍入成 0 或 1，就撞上 $\log 0=-\infty$。把 $p=\sigma(z)$ 代进去化简，可以得到一个**只用 logits、且不会出现 $\log0$** 的等价式：
+
+$$
+\mathcal L=\max(z,0)-zy+\log\!\left(1+e^{-|z|}\right)
+$$
+
+$\max(z,0)$ 与 $|z|$ 配合，保证指数项永远是 $e^{\text{负数}}\in(0,1]$，怎么算都不溢出。
+
+```python
 def binary_cross_entropy_with_logits(logits, y):
-    # Stable form:
-    # max(z, 0) - z*y + log(1 + exp(-abs(z)))
+    """稳定形式：max(z, 0) - z*y + log(1 + exp(-|z|))；直接吃 logits，不要先算概率"""
     logits = np.asarray(logits, dtype=float)
     y = np.asarray(y, dtype=float)
+
+    # -np.abs(logits) 保证指数恒为负 → exp 落在 (0, 1]，永不溢出
+    # np.log1p(t) 算的是 log(1+t)，t 很小时比 np.log(1+t) 精度高得多
     loss = np.maximum(logits, 0) - logits * y + np.log1p(np.exp(-np.abs(logits)))
-    return loss.mean()
+    return loss.mean()          # 对 batch 求平均
 
 
 class LogisticRegressionGD:
     def __init__(self, lr=0.1, max_iter=1000, l2=0.0, fit_intercept=True):
-        self.lr = lr
-        self.max_iter = max_iter
-        self.l2 = l2
+        self.lr = lr                      # 学习率
+        self.max_iter = max_iter          # 迭代轮数
+        self.l2 = l2                      # L2 正则强度，0 表示不加正则
         self.fit_intercept = fit_intercept
         self.w = None
-        self.loss_history = []
+        self.loss_history = []            # 记录每轮 loss，用来画收敛曲线 / 调试
 
     def _add_intercept(self, X):
+        """在 X 最左边拼一列全 1，把截距 b 吸收成 w[0]，公式简化为纯矩阵乘"""
         if not self.fit_intercept:
             return X
         ones = np.ones((X.shape[0], 1))
@@ -250,30 +295,32 @@ class LogisticRegressionGD:
 
     def fit(self, X, y):
         X = np.asarray(X, dtype=float)
-        y = np.asarray(y, dtype=float).reshape(-1)
+        y = np.asarray(y, dtype=float).reshape(-1)   # 拉平成 (n,)，防止 (n,1) 触发广播 bug
         Xb = self._add_intercept(X)
 
         n_samples, n_features = Xb.shape
-        self.w = np.zeros(n_features)
+        self.w = np.zeros(n_features)     # BCE + 线性 logit 是凸问题，零初始化就够
         self.loss_history = []
 
         for _ in range(self.max_iter):
-            logits = Xb @ self.w
-            probs = sigmoid(logits)
+            logits = Xb @ self.w          # 1. 前向只算到 logits，不提前求概率
+            probs = sigmoid(logits)       # 2. 转成概率
 
+            # 3. 梯度：对 logits 求导后是 (p - y)，链式回到 w 就是 X^T (p - y) / n
             grad = Xb.T @ (probs - y) / n_samples
 
-            if self.l2 > 0:
+            if self.l2 > 0:               # 4. L2 正则的梯度就是 lambda * w
                 reg = self.w.copy()
                 if self.fit_intercept:
-                    reg[0] = 0.0  # do not regularize intercept
+                    reg[0] = 0.0          # 截距不参与正则（它只是整体基准，不该被收缩）
                 grad += self.l2 * reg
 
-            self.w -= self.lr * grad
+            self.w -= self.lr * grad      # 5. 梯度下降更新
 
+            # 6. 用更新后的参数记录 loss，曲线才反映当前模型
             logits = Xb @ self.w
             loss = binary_cross_entropy_with_logits(logits, y)
-            if self.l2 > 0:
+            if self.l2 > 0:               # 正则项也要计入 loss，否则曲线和目标函数对不上
                 reg_w = self.w[1:] if self.fit_intercept else self.w
                 loss += 0.5 * self.l2 * np.dot(reg_w, reg_w)
             self.loss_history.append(loss)
@@ -281,11 +328,13 @@ class LogisticRegressionGD:
         return self
 
     def predict_proba(self, X):
+        """输出正类概率，落在 (0, 1)"""
         X = np.asarray(X, dtype=float)
         Xb = self._add_intercept(X)
         return sigmoid(Xb @ self.w)
 
     def predict(self, X, threshold=0.5):
+        """阈值默认 0.5，但生产中应由 precision/recall 的业务成本决定"""
         return (self.predict_proba(X) >= threshold).astype(int)
 ```
 
@@ -338,7 +387,25 @@ def linear_regression(X, y):
     return theta                        # theta[0] 是截距 b，其余是各特征权重
 ```
 
-### 推荐实现：`lstsq`
+### `lstsq` 是什么？要手写它吗？
+
+**不用手写。** `np.linalg.lstsq` 是 LAPACK 提供的最小二乘求解器（内部走 SVD 或 QR 分解），面试里直接调用即可——手撕 SVD 不是这道题的考点。真正要能讲清的是**为什么用它，而不是照抄闭式解**：
+
+$$
+\theta=(X^\top X)^{-1}X^\top y
+$$
+
+这个式子适合写在纸上，不适合写进代码。三种写法从差到好：
+
+| 写法                                | 问题                                                                        |
+| ----------------------------------- | --------------------------------------------------------------------------- |
+| `inv(X.T @ X) @ X.T @ y`            | 显式求逆，最不稳；且 $X^\top X$ 的条件数是 $X$ 的**平方**，共线性一强就炸    |
+| `solve(X.T @ X, X.T @ y)`           | 不求逆、改解线性方程组，好一些；但仍要构造 $X^\top X$，条件数平方的问题还在  |
+| `lstsq(X, y)`                       | **根本不构造 $X^\top X$**，直接对 $X$ 分解求最小二乘；$X$ 秩亏时还给最小范数解 |
+
+所以标准答法是：先写出闭式解证明你懂推导，再说「实际实现我会调 `lstsq`，因为它不显式求逆、也不构造条件数被平方的 $X^\top X$」。
+
+### 面试版实现（封装成类）
 
 ```python
 import numpy as np
@@ -347,9 +414,10 @@ import numpy as np
 class LinearRegressionClosedForm:
     def __init__(self, fit_intercept=True):
         self.fit_intercept = fit_intercept
-        self.theta = None
+        self.theta = None                 # 拟合后是长度 (n_features + 1) 的权重向量
 
     def _add_intercept(self, X):
+        """拼一列全 1，让截距 b 变成 theta[0]"""
         if not self.fit_intercept:
             return X
         ones = np.ones((X.shape[0], 1))
@@ -360,15 +428,17 @@ class LinearRegressionClosedForm:
         y = np.asarray(y, dtype=float)
         Xb = self._add_intercept(X)
 
-        # More stable than explicitly computing inv(X.T @ X).
+        # 比显式算 inv(X.T @ X) 稳得多；rcond=None 采用新版默认的奇异值截断规则
+        # 返回值依次是：解、残差平方和、X 的秩、奇异值
         self.theta, residuals, rank, singular_values = np.linalg.lstsq(
             Xb, y, rcond=None
         )
+        # rank < Xb.shape[1] 就说明特征间存在完全共线，此时解不唯一
         return self
 
     def predict(self, X):
         X = np.asarray(X, dtype=float)
-        Xb = self._add_intercept(X)
+        Xb = self._add_intercept(X)       # 预测时也必须拼同样的一列 1
         return Xb @ self.theta
 ```
 
@@ -412,20 +482,29 @@ $$
 
 ### Ridge 版本
 
+闭式解只需在 $X^\top X$ 上加一个 $\alpha I$：
+
+$$
+\theta=(X^\top X+\alpha I)^{-1}X^\top y
+$$
+
+这一项的作用不只是「防过拟合」——加在对角线上会把最小的那些奇异值抬起来，$X^\top X$ 即使原本奇异也变得可逆，所以 Ridge 天然能处理共线性。
+
 ```python
 def ridge_regression(X, y, alpha=1.0, fit_intercept=True):
     X = np.asarray(X, dtype=float)
     y = np.asarray(y, dtype=float)
     if fit_intercept:
-        Xb = np.hstack([np.ones((X.shape[0], 1)), X])
+        Xb = np.hstack([np.ones((X.shape[0], 1)), X])   # 拼截距列
     else:
         Xb = X
 
     n_features = Xb.shape[1]
-    reg = alpha * np.eye(n_features)
+    reg = alpha * np.eye(n_features)      # alpha * I，加在 X^T X 的对角线上
     if fit_intercept:
-        reg[0, 0] = 0.0
+        reg[0, 0] = 0.0                   # 截距项不正则化
 
+    # 用 solve 而不是 inv：解方程比求逆更稳、更快
     theta = np.linalg.solve(Xb.T @ Xb + reg, Xb.T @ y)
     return theta
 ```
@@ -457,9 +536,21 @@ def polynomial_regression_1d(x, y, degree=3):
 
 ## 4. Softmax
 
-Softmax 把一堆没有约束的原始分数（logits）变成**和为 1** 的概率分布：先取指数 $e^{z}$（保证为正、并放大差距），再除以总和做归一化。
+Softmax 把一堆没有约束的原始分数（logits）变成**和为 1** 的概率分布：
+
+$$
+\operatorname{softmax}(z)_i=\frac{e^{z_i}}{\sum_{j}e^{z_j}}
+$$
+
+分子取指数保证结果为正、并放大分数差距，分母是所有项之和保证归一化。
 
 ### 稳定实现
+
+真正写的是下面这个等价形式（分子分母同乘 $e^{-\max_j z_j}$）：
+
+$$
+\operatorname{softmax}(z)_i=\frac{e^{z_i-\max_j z_j}}{\sum_k e^{z_k-\max_j z_j}}
+$$
 
 ```python
 import numpy as np
@@ -467,24 +558,61 @@ import numpy as np
 
 def softmax(x, axis=-1):
     x = np.asarray(x, dtype=float)
+
+    # 减去每行最大值：数学上完全等价，但把最大的指数压成 e^0 = 1，杜绝上溢
     x_shifted = x - np.max(x, axis=axis, keepdims=True)
     exp_x = np.exp(x_shifted)
+
+    # keepdims=True 保留被求和的那一维（(batch, 1) 而不是 (batch,)），否则广播会错位
     return exp_x / exp_x.sum(axis=axis, keepdims=True)
 ```
 
+**为什么不写成更短的那个版本？** 你可能见过这种写法：
+
+```python
+def softmax(x):            # 只对「一维向量」正确
+    x = x - np.max(x)
+    e = np.exp(x)
+    return e / e.sum()
+```
+
+单条 logits 向量喂进去没问题，但一带 batch 就错了：`np.max(x)` 取的是**整个矩阵**的最大值，`e.sum()` 把**所有样本的所有类别**加成一个标量。结果每行不再各自归一化，而是整个矩阵加起来才等于 1，概率全被稀释成 $1/\text{batch}$ 量级。
+
+所以只要输入可能有 batch 维，就必须写 `axis=-1, keepdims=True` 让每行独立归一化。面试时写带 `axis` 的版本，并主动说明这个区别。
+
 ### Cross-Entropy
+
+多分类交叉熵只看**真实类别那一项**的概率：
+
+$$
+\mathcal L=-\frac1N\sum_{i=1}^{N}\log p_{i,y_i},
+\qquad p_{i,k}=\operatorname{softmax}(z_i)_k
+$$
+
+实现上不要先算 softmax 再取 log，而是把两步合并成 **log-softmax**，除法变减法、也不会出现 $\log 0$：
+
+$$
+\log\operatorname{softmax}(z)_k
+=z_k-\max_j z_j-\log\sum_{m}e^{z_m-\max_j z_j}
+$$
 
 ```python
 def cross_entropy_from_logits(logits, y):
     """
-    logits: shape (batch, num_classes)
-    y: integer labels, shape (batch,)
+    logits: shape (batch, num_classes)，未经 softmax 的原始分数
+    y:      shape (batch,)，整数类别标签（不是 one-hot）
     """
     logits = np.asarray(logits, dtype=float)
     y = np.asarray(y, dtype=int)
 
+    # 1. 同样先减每行最大值做稳定化
     shifted = logits - logits.max(axis=1, keepdims=True)
+
+    # 2. log-softmax：log(e^s / Σe^s) = s - log(Σe^s)，全程没有除法、也不会 log(0)
     log_probs = shifted - np.log(np.exp(shifted).sum(axis=1, keepdims=True))
+
+    # 3. 花式索引取出每个样本真实类别那一项：第 i 行取第 y[i] 列
+    #    等价于「和 one-hot 相乘再求和」，但不必真的构造 one-hot 矩阵
     return -log_probs[np.arange(logits.shape[0]), y].mean()
 ```
 
@@ -497,6 +625,13 @@ def cross_entropy_from_logits(logits, y):
 
 ## 5. Scaled Dot-Product Attention
 
+$$
+\operatorname{Attention}(Q,K,V)
+=\operatorname{softmax}\!\left(\frac{QK^\top}{\sqrt{d_k}}+M\right)V
+$$
+
+四步：$QK^\top$ 算出每个 query 和每个 key 的匹配分 → 除 $\sqrt{d_k}$ 防止 softmax 饱和 → 加 mask 屏蔽不该看的位置 → softmax 归一成权重后去加权 $V$。
+
 ### 单头 Attention
 
 ```python
@@ -504,7 +639,7 @@ import numpy as np
 
 
 def softmax(x, axis=-1):
-    x = x - np.max(x, axis=axis, keepdims=True)
+    x = x - np.max(x, axis=axis, keepdims=True)     # 稳定化：减去每行最大值
     exp_x = np.exp(x)
     return exp_x / np.sum(exp_x, axis=axis, keepdims=True)
 
@@ -515,19 +650,27 @@ def scaled_dot_product_attention(Q, K, V, mask=None):
     K: shape (batch, kv_len, d_k)
     V: shape (batch, kv_len, d_v)
     mask: optional, broadcastable to (batch, q_len, kv_len).
-          Use True for positions that are allowed.
+          本实现约定 True = 该位置可见（不同框架约定相反，面试务必说清）
 
     Returns:
         output: shape (batch, q_len, d_v)
         weights: shape (batch, q_len, kv_len)
     """
     d_k = Q.shape[-1]
+
+    # 1. 打分并缩放：swapaxes(-1,-2) 是转置最后两维，(q_len,d_k)@(d_k,kv_len) -> (q_len,kv_len)
+    #    除 sqrt(d_k)：点积是 d_k 项之和、方差随维度线性增长，不缩放会让 softmax 饱和、梯度消失
     scores = Q @ np.swapaxes(K, -1, -2) / np.sqrt(d_k)
 
+    # 2. 屏蔽：把不可见位置换成一个极小值，softmax 后权重 ≈ 0
+    #    必须在 softmax 之前做，否则归一化分母里仍混进了这些位置
     if mask is not None:
         scores = np.where(mask, scores, -1e9)
 
+    # 3. 沿 kv_len 维归一化：每个 query 对所有 key 的注意力加起来为 1
     weights = softmax(scores, axis=-1)
+
+    # 4. 用权重加权求和 V，得到每个 query 位置的输出
     output = weights @ V
     return output, weights
 ```
@@ -538,7 +681,8 @@ def scaled_dot_product_attention(Q, K, V, mask=None):
 def causal_mask(q_len, kv_len=None):
     if kv_len is None:
         kv_len = q_len
-    # shape (q_len, kv_len), True means visible
+    # np.tril 取下三角（含对角线）：第 i 行只有前 i+1 列为 True
+    # 即位置 i 只能看到 <= i 的位置，看不到未来
     return np.tril(np.ones((q_len, kv_len), dtype=bool))
 
 
@@ -606,24 +750,29 @@ import numpy as np
 
 def split_heads(x, num_heads):
     """
+    切蛋糕：把 d_model 平分给 num_heads 个头
     x: shape (batch, seq_len, d_model)
     return: shape (batch, num_heads, seq_len, d_head)
     """
     batch, seq_len, d_model = x.shape
-    assert d_model % num_heads == 0
+    assert d_model % num_heads == 0          # 必须整除，否则没法平分
     d_head = d_model // num_heads
+
+    # 先把最后一维拆成 (num_heads, d_head)
     x = x.reshape(batch, seq_len, num_heads, d_head)
+    # 再把 num_heads 换到前面 —— 让它变成"批次维"，后面 h 个头就能并行算 attention
     return np.transpose(x, (0, 2, 1, 3))
 
 
 def combine_heads(x):
     """
+    拼回去：split_heads 的逆操作
     x: shape (batch, num_heads, seq_len, d_head)
     return: shape (batch, seq_len, d_model)
     """
     batch, num_heads, seq_len, d_head = x.shape
-    x = np.transpose(x, (0, 2, 1, 3))
-    return x.reshape(batch, seq_len, num_heads * d_head)
+    x = np.transpose(x, (0, 2, 1, 3))        # 先把 seq_len 换回第 1 维
+    return x.reshape(batch, seq_len, num_heads * d_head)   # 再把 h 个头首尾相接
 
 
 def multi_head_attention(X, Wq, Wk, Wv, Wo, num_heads, mask=None):
@@ -632,14 +781,18 @@ def multi_head_attention(X, Wq, Wk, Wv, Wo, num_heads, mask=None):
     Wq/Wk/Wv/Wo: shape (d_model, d_model)
     mask: optional, shape broadcastable to (batch, num_heads, seq_len, seq_len)
     """
+    # 1. 三次线性投影，把同一个 X 变成 Q/K/V 三种视角（三组权重互相独立，不共享）
     Q = X @ Wq
     K = X @ Wk
     V = X @ Wv
 
+    # 2. 切成多头：注意是先投影再切，等价于每个头有自己的小投影矩阵
     Q = split_heads(Q, num_heads)
     K = split_heads(K, num_heads)
     V = split_heads(V, num_heads)
 
+    # 3. 每个头各算各的 attention。这里 d_head = d_model / h，
+    #    所以缩放用的是 sqrt(d_head) 而不是 sqrt(d_model)
     d_head = Q.shape[-1]
     scores = Q @ np.swapaxes(K, -1, -2) / np.sqrt(d_head)
 
@@ -647,7 +800,10 @@ def multi_head_attention(X, Wq, Wk, Wv, Wo, num_heads, mask=None):
         scores = np.where(mask, scores, -1e9)
 
     weights = softmax(scores, axis=-1)
-    context = weights @ V
+    context = weights @ V                    # (batch, num_heads, seq_len, d_head)
+
+    # 4. 拼回 d_model，再过输出投影 Wo 把各头的结论融合起来
+    #    没有 Wo 的话各头结果只是简单并排堆着，从未交互
     context = combine_heads(context)
     return context @ Wo, weights
 ```
@@ -853,6 +1009,7 @@ import numpy as np
 
 
 def softmax(x):
+    """这里输入是单条一维 logits，所以可以用不带 axis 的简版（见第 4 节的说明）"""
     x = x - np.max(x)
     e = np.exp(x)
     return e / e.sum()
@@ -861,11 +1018,14 @@ def softmax(x):
 def top_k_sampling(logits, k=50, temperature=1.0, rng=None):
     """logits: shape (vocab,)；返回采样得到的 token id"""
     rng = rng or np.random.default_rng()
+
+    # 温度缩放要在 softmax 之前作用于 logits；max(..., 1e-8) 防止 T=0 时除零
     logits = np.asarray(logits, dtype=float) / max(temperature, 1e-8)
 
-    k = min(k, logits.size)
-    idx = np.argpartition(logits, -k)[-k:]      # O(V)，不必全排序
-    probs = softmax(logits[idx])                # 只在候选集内归一化
+    k = min(k, logits.size)                     # k 比词表还大时退化成全采样
+    # argpartition 只保证第 k 大的元素就位、左右两边各自不排序，O(V) 比全排序 O(VlogV) 快
+    idx = np.argpartition(logits, -k)[-k:]      # 取最大的 k 个的下标
+    probs = softmax(logits[idx])                # 只在候选集内归一化（截断后必须重新归一）
     return int(rng.choice(idx, p=probs))
 
 
@@ -920,8 +1080,11 @@ def calculate_entropy(y):
 
 def information_gain(y_parent, y_left, y_right):
     n = len(y_parent)
+    # 子节点熵的加权平均，权重是落进该子节点的样本占比
+    # 必须加权：否则一个只有 2 个样本的纯净子节点会把整个分裂的评分骗高
     child = (len(y_left) / n) * calculate_entropy(y_left) \
           + (len(y_right) / n) * calculate_entropy(y_right)
+    # 切分前的混乱度 - 切分后的期望混乱度，越大说明这一刀切得越有效
     return calculate_entropy(y_parent) - child
 ```
 
