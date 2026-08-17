@@ -119,41 +119,46 @@
         <span class="n">b</span> <span class="o">-=</span> <span class="n">lr</span> <span class="o">*</span> <span class="n">db</span>
 
     <span class="k">return</span> <span class="n">w</span><span class="p">,</span> <span class="n">b</span>
-</code></pre></div></div> <h3 id="数值稳定实现">数值稳定实现</h3> <div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kn">import</span> <span class="n">numpy</span> <span class="k">as</span> <span class="n">np</span>
+</code></pre></div></div> <h3 id="数值稳定实现">数值稳定实现</h3> <h4 id="sigmoid公式与它的坑">Sigmoid：公式与它的坑</h4> <p>\[ \sigma(z)=\frac{1}{1+e^{-z}} \]</p> <p>照着这个式子直接写 <code>1 / (1 + np.exp(-z))</code>，当 \(z\) 是很大的负数（比如 \(-1000\)）时，\(e^{-z}=e^{1000}\) 直接溢出成 <code>inf</code>，得到 <code>inf</code> 甚至 <code>nan</code>。</p> <p>解决办法是分子分母同乘 \(e^{z}\)，得到一个等价形式：</p> <p>\[ \sigma(z)=\frac{1}{1+e^{-z}}=\frac{e^{z}}{1+e^{z}} \]</p> <p>两个写法<strong>数学上完全相同，数值行为却相反</strong>：</p> <ul> <li>\(z\ge0\) 时用左边，指数部分是 \(e^{-z}\le1\)，安全。</li> <li>\(z&lt;0\) 时用右边，指数部分是 \(e^{z}&lt;1\)，也安全。</li> </ul> <p>所以按符号分两支，保证<strong>永远只对负数取指数</strong>。</p> <div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kn">import</span> <span class="n">numpy</span> <span class="k">as</span> <span class="n">np</span>
 
 
 <span class="k">def</span> <span class="nf">sigmoid</span><span class="p">(</span><span class="n">z</span><span class="p">):</span>
     <span class="n">z</span> <span class="o">=</span> <span class="n">np</span><span class="p">.</span><span class="nf">asarray</span><span class="p">(</span><span class="n">z</span><span class="p">)</span>
-    <span class="n">out</span> <span class="o">=</span> <span class="n">np</span><span class="p">.</span><span class="nf">empty_like</span><span class="p">(</span><span class="n">z</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">out</span> <span class="o">=</span> <span class="n">np</span><span class="p">.</span><span class="nf">empty_like</span><span class="p">(</span><span class="n">z</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>   <span class="c1"># 创建一个和 z 维度相同、用来装结果的空数组
+</span>
+    <span class="n">pos</span> <span class="o">=</span> <span class="n">z</span> <span class="o">&gt;=</span> <span class="mi">0</span>    <span class="c1"># 找到所有 &gt;= 0 的位置（布尔掩码 Boolean Mask）
+</span>    <span class="n">neg</span> <span class="o">=</span> <span class="o">~</span><span class="n">pos</span>      <span class="c1"># 找到所有 &lt; 0 的位置（按位取反）
+</span>
+    <span class="c1"># 1. 正数区域：用 1 / (1 + exp(-z))，此时 exp(-z) &lt;= 1，不会溢出
+</span>    <span class="n">out</span><span class="p">[</span><span class="n">pos</span><span class="p">]</span> <span class="o">=</span> <span class="mf">1.0</span> <span class="o">/</span> <span class="p">(</span><span class="mf">1.0</span> <span class="o">+</span> <span class="n">np</span><span class="p">.</span><span class="nf">exp</span><span class="p">(</span><span class="o">-</span><span class="n">z</span><span class="p">[</span><span class="n">pos</span><span class="p">]))</span>
 
-    <span class="n">pos</span> <span class="o">=</span> <span class="n">z</span> <span class="o">&gt;=</span> <span class="mi">0</span>
-    <span class="n">neg</span> <span class="o">=</span> <span class="o">~</span><span class="n">pos</span>
-
-    <span class="n">out</span><span class="p">[</span><span class="n">pos</span><span class="p">]</span> <span class="o">=</span> <span class="mf">1.0</span> <span class="o">/</span> <span class="p">(</span><span class="mf">1.0</span> <span class="o">+</span> <span class="n">np</span><span class="p">.</span><span class="nf">exp</span><span class="p">(</span><span class="o">-</span><span class="n">z</span><span class="p">[</span><span class="n">pos</span><span class="p">]))</span>
-    <span class="n">exp_z</span> <span class="o">=</span> <span class="n">np</span><span class="p">.</span><span class="nf">exp</span><span class="p">(</span><span class="n">z</span><span class="p">[</span><span class="n">neg</span><span class="p">])</span>
+    <span class="c1"># 2. 负数区域：用 exp(z) / (1 + exp(z))，此时 exp(z) &lt; 1，同样不会溢出
+</span>    <span class="n">exp_z</span> <span class="o">=</span> <span class="n">np</span><span class="p">.</span><span class="nf">exp</span><span class="p">(</span><span class="n">z</span><span class="p">[</span><span class="n">neg</span><span class="p">])</span>
     <span class="n">out</span><span class="p">[</span><span class="n">neg</span><span class="p">]</span> <span class="o">=</span> <span class="n">exp_z</span> <span class="o">/</span> <span class="p">(</span><span class="mf">1.0</span> <span class="o">+</span> <span class="n">exp_z</span><span class="p">)</span>
+
     <span class="k">return</span> <span class="n">out</span>
-
-
-<span class="k">def</span> <span class="nf">binary_cross_entropy_with_logits</span><span class="p">(</span><span class="n">logits</span><span class="p">,</span> <span class="n">y</span><span class="p">):</span>
-    <span class="c1"># Stable form:
-</span>    <span class="c1"># max(z, 0) - z*y + log(1 + exp(-abs(z)))
-</span>    <span class="n">logits</span> <span class="o">=</span> <span class="n">np</span><span class="p">.</span><span class="nf">asarray</span><span class="p">(</span><span class="n">logits</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+</code></pre></div></div> <h4 id="binary-cross-entropy同一个坑的另一面">Binary Cross-Entropy：同一个坑的另一面</h4> <p>原始公式（记 \(p=\sigma(z)\)）：</p> <p>\[ \mathcal L=-\big[y\log p+(1-y)\log(1-p)\big] \]</p> <p>问题在于先求出 \(p\) 再取对数：\(p\) 一旦被浮点舍入成 0 或 1，就撞上 \(\log 0=-\infty\)。把 \(p=\sigma(z)\) 代进去化简，可以得到一个<strong>只用 logits、且不会出现 \(\log0\)</strong> 的等价式：</p> <p>\[ \mathcal L=\max(z,0)-zy+\log\!\left(1+e^{-|z|}\right) \]</p> <p>\(\max(z,0)\) 与 \(|z|\) 配合，保证指数项永远是 \(e^{\text{负数}}\in(0,1]\)，怎么算都不溢出。</p> <div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">def</span> <span class="nf">binary_cross_entropy_with_logits</span><span class="p">(</span><span class="n">logits</span><span class="p">,</span> <span class="n">y</span><span class="p">):</span>
+    <span class="sh">"""</span><span class="s">稳定形式：max(z, 0) - z*y + log(1 + exp(-|z|))；直接吃 logits，不要先算概率</span><span class="sh">"""</span>
+    <span class="n">logits</span> <span class="o">=</span> <span class="n">np</span><span class="p">.</span><span class="nf">asarray</span><span class="p">(</span><span class="n">logits</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
     <span class="n">y</span> <span class="o">=</span> <span class="n">np</span><span class="p">.</span><span class="nf">asarray</span><span class="p">(</span><span class="n">y</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
-    <span class="n">loss</span> <span class="o">=</span> <span class="n">np</span><span class="p">.</span><span class="nf">maximum</span><span class="p">(</span><span class="n">logits</span><span class="p">,</span> <span class="mi">0</span><span class="p">)</span> <span class="o">-</span> <span class="n">logits</span> <span class="o">*</span> <span class="n">y</span> <span class="o">+</span> <span class="n">np</span><span class="p">.</span><span class="nf">log1p</span><span class="p">(</span><span class="n">np</span><span class="p">.</span><span class="nf">exp</span><span class="p">(</span><span class="o">-</span><span class="n">np</span><span class="p">.</span><span class="nf">abs</span><span class="p">(</span><span class="n">logits</span><span class="p">)))</span>
-    <span class="k">return</span> <span class="n">loss</span><span class="p">.</span><span class="nf">mean</span><span class="p">()</span>
 
+    <span class="c1"># -np.abs(logits) 保证指数恒为负 → exp 落在 (0, 1]，永不溢出
+</span>    <span class="c1"># np.log1p(t) 算的是 log(1+t)，t 很小时比 np.log(1+t) 精度高得多
+</span>    <span class="n">loss</span> <span class="o">=</span> <span class="n">np</span><span class="p">.</span><span class="nf">maximum</span><span class="p">(</span><span class="n">logits</span><span class="p">,</span> <span class="mi">0</span><span class="p">)</span> <span class="o">-</span> <span class="n">logits</span> <span class="o">*</span> <span class="n">y</span> <span class="o">+</span> <span class="n">np</span><span class="p">.</span><span class="nf">log1p</span><span class="p">(</span><span class="n">np</span><span class="p">.</span><span class="nf">exp</span><span class="p">(</span><span class="o">-</span><span class="n">np</span><span class="p">.</span><span class="nf">abs</span><span class="p">(</span><span class="n">logits</span><span class="p">)))</span>
+    <span class="k">return</span> <span class="n">loss</span><span class="p">.</span><span class="nf">mean</span><span class="p">()</span>          <span class="c1"># 对 batch 求平均
+</span>
 
 <span class="k">class</span> <span class="nc">LogisticRegressionGD</span><span class="p">:</span>
     <span class="k">def</span> <span class="nf">__init__</span><span class="p">(</span><span class="n">self</span><span class="p">,</span> <span class="n">lr</span><span class="o">=</span><span class="mf">0.1</span><span class="p">,</span> <span class="n">max_iter</span><span class="o">=</span><span class="mi">1000</span><span class="p">,</span> <span class="n">l2</span><span class="o">=</span><span class="mf">0.0</span><span class="p">,</span> <span class="n">fit_intercept</span><span class="o">=</span><span class="bp">True</span><span class="p">):</span>
-        <span class="n">self</span><span class="p">.</span><span class="n">lr</span> <span class="o">=</span> <span class="n">lr</span>
-        <span class="n">self</span><span class="p">.</span><span class="n">max_iter</span> <span class="o">=</span> <span class="n">max_iter</span>
-        <span class="n">self</span><span class="p">.</span><span class="n">l2</span> <span class="o">=</span> <span class="n">l2</span>
-        <span class="n">self</span><span class="p">.</span><span class="n">fit_intercept</span> <span class="o">=</span> <span class="n">fit_intercept</span>
+        <span class="n">self</span><span class="p">.</span><span class="n">lr</span> <span class="o">=</span> <span class="n">lr</span>                      <span class="c1"># 学习率
+</span>        <span class="n">self</span><span class="p">.</span><span class="n">max_iter</span> <span class="o">=</span> <span class="n">max_iter</span>          <span class="c1"># 迭代轮数
+</span>        <span class="n">self</span><span class="p">.</span><span class="n">l2</span> <span class="o">=</span> <span class="n">l2</span>                      <span class="c1"># L2 正则强度，0 表示不加正则
+</span>        <span class="n">self</span><span class="p">.</span><span class="n">fit_intercept</span> <span class="o">=</span> <span class="n">fit_intercept</span>
         <span class="n">self</span><span class="p">.</span><span class="n">w</span> <span class="o">=</span> <span class="bp">None</span>
-        <span class="n">self</span><span class="p">.</span><span class="n">loss_history</span> <span class="o">=</span> <span class="p">[]</span>
-
+        <span class="n">self</span><span class="p">.</span><span class="n">loss_history</span> <span class="o">=</span> <span class="p">[]</span>            <span class="c1"># 记录每轮 loss，用来画收敛曲线 / 调试
+</span>
     <span class="k">def</span> <span class="nf">_add_intercept</span><span class="p">(</span><span class="n">self</span><span class="p">,</span> <span class="n">X</span><span class="p">):</span>
+        <span class="sh">"""</span><span class="s">在 X 最左边拼一列全 1，把截距 b 吸收成 w[0]，公式简化为纯矩阵乘</span><span class="sh">"""</span>
         <span class="k">if</span> <span class="ow">not</span> <span class="n">self</span><span class="p">.</span><span class="n">fit_intercept</span><span class="p">:</span>
             <span class="k">return</span> <span class="n">X</span>
         <span class="n">ones</span> <span class="o">=</span> <span class="n">np</span><span class="p">.</span><span class="nf">ones</span><span class="p">((</span><span class="n">X</span><span class="p">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="mi">1</span><span class="p">))</span>
@@ -161,42 +166,46 @@
 
     <span class="k">def</span> <span class="nf">fit</span><span class="p">(</span><span class="n">self</span><span class="p">,</span> <span class="n">X</span><span class="p">,</span> <span class="n">y</span><span class="p">):</span>
         <span class="n">X</span> <span class="o">=</span> <span class="n">np</span><span class="p">.</span><span class="nf">asarray</span><span class="p">(</span><span class="n">X</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
-        <span class="n">y</span> <span class="o">=</span> <span class="n">np</span><span class="p">.</span><span class="nf">asarray</span><span class="p">(</span><span class="n">y</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">).</span><span class="nf">reshape</span><span class="p">(</span><span class="o">-</span><span class="mi">1</span><span class="p">)</span>
-        <span class="n">Xb</span> <span class="o">=</span> <span class="n">self</span><span class="p">.</span><span class="nf">_add_intercept</span><span class="p">(</span><span class="n">X</span><span class="p">)</span>
+        <span class="n">y</span> <span class="o">=</span> <span class="n">np</span><span class="p">.</span><span class="nf">asarray</span><span class="p">(</span><span class="n">y</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">).</span><span class="nf">reshape</span><span class="p">(</span><span class="o">-</span><span class="mi">1</span><span class="p">)</span>   <span class="c1"># 拉平成 (n,)，防止 (n,1) 触发广播 bug
+</span>        <span class="n">Xb</span> <span class="o">=</span> <span class="n">self</span><span class="p">.</span><span class="nf">_add_intercept</span><span class="p">(</span><span class="n">X</span><span class="p">)</span>
 
         <span class="n">n_samples</span><span class="p">,</span> <span class="n">n_features</span> <span class="o">=</span> <span class="n">Xb</span><span class="p">.</span><span class="n">shape</span>
-        <span class="n">self</span><span class="p">.</span><span class="n">w</span> <span class="o">=</span> <span class="n">np</span><span class="p">.</span><span class="nf">zeros</span><span class="p">(</span><span class="n">n_features</span><span class="p">)</span>
-        <span class="n">self</span><span class="p">.</span><span class="n">loss_history</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="n">self</span><span class="p">.</span><span class="n">w</span> <span class="o">=</span> <span class="n">np</span><span class="p">.</span><span class="nf">zeros</span><span class="p">(</span><span class="n">n_features</span><span class="p">)</span>     <span class="c1"># BCE + 线性 logit 是凸问题，零初始化就够
+</span>        <span class="n">self</span><span class="p">.</span><span class="n">loss_history</span> <span class="o">=</span> <span class="p">[]</span>
 
         <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nf">range</span><span class="p">(</span><span class="n">self</span><span class="p">.</span><span class="n">max_iter</span><span class="p">):</span>
-            <span class="n">logits</span> <span class="o">=</span> <span class="n">Xb</span> <span class="o">@</span> <span class="n">self</span><span class="p">.</span><span class="n">w</span>
-            <span class="n">probs</span> <span class="o">=</span> <span class="nf">sigmoid</span><span class="p">(</span><span class="n">logits</span><span class="p">)</span>
+            <span class="n">logits</span> <span class="o">=</span> <span class="n">Xb</span> <span class="o">@</span> <span class="n">self</span><span class="p">.</span><span class="n">w</span>          <span class="c1"># 1. 前向只算到 logits，不提前求概率
+</span>            <span class="n">probs</span> <span class="o">=</span> <span class="nf">sigmoid</span><span class="p">(</span><span class="n">logits</span><span class="p">)</span>       <span class="c1"># 2. 转成概率
+</span>
+            <span class="c1"># 3. 梯度：对 logits 求导后是 (p - y)，链式回到 w 就是 X^T (p - y) / n
+</span>            <span class="n">grad</span> <span class="o">=</span> <span class="n">Xb</span><span class="p">.</span><span class="n">T</span> <span class="o">@</span> <span class="p">(</span><span class="n">probs</span> <span class="o">-</span> <span class="n">y</span><span class="p">)</span> <span class="o">/</span> <span class="n">n_samples</span>
 
-            <span class="n">grad</span> <span class="o">=</span> <span class="n">Xb</span><span class="p">.</span><span class="n">T</span> <span class="o">@</span> <span class="p">(</span><span class="n">probs</span> <span class="o">-</span> <span class="n">y</span><span class="p">)</span> <span class="o">/</span> <span class="n">n_samples</span>
-
-            <span class="k">if</span> <span class="n">self</span><span class="p">.</span><span class="n">l2</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
-                <span class="n">reg</span> <span class="o">=</span> <span class="n">self</span><span class="p">.</span><span class="n">w</span><span class="p">.</span><span class="nf">copy</span><span class="p">()</span>
+            <span class="k">if</span> <span class="n">self</span><span class="p">.</span><span class="n">l2</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>               <span class="c1"># 4. L2 正则的梯度就是 lambda * w
+</span>                <span class="n">reg</span> <span class="o">=</span> <span class="n">self</span><span class="p">.</span><span class="n">w</span><span class="p">.</span><span class="nf">copy</span><span class="p">()</span>
                 <span class="k">if</span> <span class="n">self</span><span class="p">.</span><span class="n">fit_intercept</span><span class="p">:</span>
-                    <span class="n">reg</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">=</span> <span class="mf">0.0</span>  <span class="c1"># do not regularize intercept
+                    <span class="n">reg</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">=</span> <span class="mf">0.0</span>          <span class="c1"># 截距不参与正则（它只是整体基准，不该被收缩）
 </span>                <span class="n">grad</span> <span class="o">+=</span> <span class="n">self</span><span class="p">.</span><span class="n">l2</span> <span class="o">*</span> <span class="n">reg</span>
 
-            <span class="n">self</span><span class="p">.</span><span class="n">w</span> <span class="o">-=</span> <span class="n">self</span><span class="p">.</span><span class="n">lr</span> <span class="o">*</span> <span class="n">grad</span>
-
-            <span class="n">logits</span> <span class="o">=</span> <span class="n">Xb</span> <span class="o">@</span> <span class="n">self</span><span class="p">.</span><span class="n">w</span>
+            <span class="n">self</span><span class="p">.</span><span class="n">w</span> <span class="o">-=</span> <span class="n">self</span><span class="p">.</span><span class="n">lr</span> <span class="o">*</span> <span class="n">grad</span>      <span class="c1"># 5. 梯度下降更新
+</span>
+            <span class="c1"># 6. 用更新后的参数记录 loss，曲线才反映当前模型
+</span>            <span class="n">logits</span> <span class="o">=</span> <span class="n">Xb</span> <span class="o">@</span> <span class="n">self</span><span class="p">.</span><span class="n">w</span>
             <span class="n">loss</span> <span class="o">=</span> <span class="nf">binary_cross_entropy_with_logits</span><span class="p">(</span><span class="n">logits</span><span class="p">,</span> <span class="n">y</span><span class="p">)</span>
-            <span class="k">if</span> <span class="n">self</span><span class="p">.</span><span class="n">l2</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
-                <span class="n">reg_w</span> <span class="o">=</span> <span class="n">self</span><span class="p">.</span><span class="n">w</span><span class="p">[</span><span class="mi">1</span><span class="p">:]</span> <span class="k">if</span> <span class="n">self</span><span class="p">.</span><span class="n">fit_intercept</span> <span class="k">else</span> <span class="n">self</span><span class="p">.</span><span class="n">w</span>
+            <span class="k">if</span> <span class="n">self</span><span class="p">.</span><span class="n">l2</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>               <span class="c1"># 正则项也要计入 loss，否则曲线和目标函数对不上
+</span>                <span class="n">reg_w</span> <span class="o">=</span> <span class="n">self</span><span class="p">.</span><span class="n">w</span><span class="p">[</span><span class="mi">1</span><span class="p">:]</span> <span class="k">if</span> <span class="n">self</span><span class="p">.</span><span class="n">fit_intercept</span> <span class="k">else</span> <span class="n">self</span><span class="p">.</span><span class="n">w</span>
                 <span class="n">loss</span> <span class="o">+=</span> <span class="mf">0.5</span> <span class="o">*</span> <span class="n">self</span><span class="p">.</span><span class="n">l2</span> <span class="o">*</span> <span class="n">np</span><span class="p">.</span><span class="nf">dot</span><span class="p">(</span><span class="n">reg_w</span><span class="p">,</span> <span class="n">reg_w</span><span class="p">)</span>
             <span class="n">self</span><span class="p">.</span><span class="n">loss_history</span><span class="p">.</span><span class="nf">append</span><span class="p">(</span><span class="n">loss</span><span class="p">)</span>
 
         <span class="k">return</span> <span class="n">self</span>
 
     <span class="k">def</span> <span class="nf">predict_proba</span><span class="p">(</span><span class="n">self</span><span class="p">,</span> <span class="n">X</span><span class="p">):</span>
+        <span class="sh">"""</span><span class="s">输出正类概率，落在 (0, 1)</span><span class="sh">"""</span>
         <span class="n">X</span> <span class="o">=</span> <span class="n">np</span><span class="p">.</span><span class="nf">asarray</span><span class="p">(</span><span class="n">X</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
         <span class="n">Xb</span> <span class="o">=</span> <span class="n">self</span><span class="p">.</span><span class="nf">_add_intercept</span><span class="p">(</span><span class="n">X</span><span class="p">)</span>
         <span class="k">return</span> <span class="nf">sigmoid</span><span class="p">(</span><span class="n">Xb</span> <span class="o">@</span> <span class="n">self</span><span class="p">.</span><span class="n">w</span><span class="p">)</span>
 
     <span class="k">def</span> <span class="nf">predict</span><span class="p">(</span><span class="n">self</span><span class="p">,</span> <span class="n">X</span><span class="p">,</span> <span class="n">threshold</span><span class="o">=</span><span class="mf">0.5</span><span class="p">):</span>
+        <span class="sh">"""</span><span class="s">阈值默认 0.5，但生产中应由 precision/recall 的业务成本决定</span><span class="sh">"""</span>
         <span class="nf">return </span><span class="p">(</span><span class="n">self</span><span class="p">.</span><span class="nf">predict_proba</span><span class="p">(</span><span class="n">X</span><span class="p">)</span> <span class="o">&gt;=</span> <span class="n">threshold</span><span class="p">).</span><span class="nf">astype</span><span class="p">(</span><span class="nb">int</span><span class="p">)</span>
 </code></pre></div></div> <h3 id="example-1">Example</h3> <div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">np</span><span class="p">.</span><span class="n">random</span><span class="p">.</span><span class="nf">seed</span><span class="p">(</span><span class="mi">42</span><span class="p">)</span>
 <span class="n">X</span> <span class="o">=</span> <span class="n">np</span><span class="p">.</span><span class="n">random</span><span class="p">.</span><span class="nf">randn</span><span class="p">(</span><span class="mi">100</span><span class="p">,</span> <span class="mi">2</span><span class="p">)</span>
@@ -219,15 +228,16 @@
     <span class="c1"># lstsq 基于 SVD，比显式求逆稳定得多
 </span>    <span class="n">theta</span><span class="p">,</span> <span class="o">*</span><span class="n">_</span> <span class="o">=</span> <span class="n">np</span><span class="p">.</span><span class="n">linalg</span><span class="p">.</span><span class="nf">lstsq</span><span class="p">(</span><span class="n">Xb</span><span class="p">,</span> <span class="n">y</span><span class="p">,</span> <span class="n">rcond</span><span class="o">=</span><span class="bp">None</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">theta</span>                        <span class="c1"># theta[0] 是截距 b，其余是各特征权重
-</span></code></pre></div></div> <h3 id="推荐实现lstsq">推荐实现：<code>lstsq</code> </h3> <div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kn">import</span> <span class="n">numpy</span> <span class="k">as</span> <span class="n">np</span>
+</span></code></pre></div></div> <h3 id="lstsq-是什么要手写它吗"> <code>lstsq</code> 是什么？要手写它吗？</h3> <p><strong>不用手写。</strong> <code>np.linalg.lstsq</code> 是 LAPACK 提供的最小二乘求解器（内部走 SVD 或 QR 分解），面试里直接调用即可——手撕 SVD 不是这道题的考点。真正要能讲清的是<strong>为什么用它，而不是照抄闭式解</strong>：</p> <p>\[ \theta=(X^\top X)^{-1}X^\top y \]</p> <p>这个式子适合写在纸上，不适合写进代码。三种写法从差到好：</p> <table> <thead> <tr> <th>写法</th> <th>问题</th> </tr> </thead> <tbody> <tr> <td><code>inv(X.T @ X) @ X.T @ y</code></td> <td>显式求逆，最不稳；且 \(X^\top X\) 的条件数是 \(X\) 的<strong>平方</strong>，共线性一强就炸</td> </tr> <tr> <td><code>solve(X.T @ X, X.T @ y)</code></td> <td>不求逆、改解线性方程组，好一些；但仍要构造 \(X^\top X\)，条件数平方的问题还在</td> </tr> <tr> <td><code>lstsq(X, y)</code></td> <td> <strong>根本不构造 \(X^\top X\)</strong>，直接对 \(X\) 分解求最小二乘；\(X\) 秩亏时还给最小范数解</td> </tr> </tbody> </table> <p>所以标准答法是：先写出闭式解证明你懂推导，再说「实际实现我会调 <code>lstsq</code>，因为它不显式求逆、也不构造条件数被平方的 \(X^\top X\)」。</p> <h3 id="面试版实现封装成类">面试版实现（封装成类）</h3> <div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kn">import</span> <span class="n">numpy</span> <span class="k">as</span> <span class="n">np</span>
 
 
 <span class="k">class</span> <span class="nc">LinearRegressionClosedForm</span><span class="p">:</span>
     <span class="k">def</span> <span class="nf">__init__</span><span class="p">(</span><span class="n">self</span><span class="p">,</span> <span class="n">fit_intercept</span><span class="o">=</span><span class="bp">True</span><span class="p">):</span>
         <span class="n">self</span><span class="p">.</span><span class="n">fit_intercept</span> <span class="o">=</span> <span class="n">fit_intercept</span>
-        <span class="n">self</span><span class="p">.</span><span class="n">theta</span> <span class="o">=</span> <span class="bp">None</span>
-
+        <span class="n">self</span><span class="p">.</span><span class="n">theta</span> <span class="o">=</span> <span class="bp">None</span>                 <span class="c1"># 拟合后是长度 (n_features + 1) 的权重向量
+</span>
     <span class="k">def</span> <span class="nf">_add_intercept</span><span class="p">(</span><span class="n">self</span><span class="p">,</span> <span class="n">X</span><span class="p">):</span>
+        <span class="sh">"""</span><span class="s">拼一列全 1，让截距 b 变成 theta[0]</span><span class="sh">"""</span>
         <span class="k">if</span> <span class="ow">not</span> <span class="n">self</span><span class="p">.</span><span class="n">fit_intercept</span><span class="p">:</span>
             <span class="k">return</span> <span class="n">X</span>
         <span class="n">ones</span> <span class="o">=</span> <span class="n">np</span><span class="p">.</span><span class="nf">ones</span><span class="p">((</span><span class="n">X</span><span class="p">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="mi">1</span><span class="p">))</span>
@@ -238,16 +248,18 @@
         <span class="n">y</span> <span class="o">=</span> <span class="n">np</span><span class="p">.</span><span class="nf">asarray</span><span class="p">(</span><span class="n">y</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
         <span class="n">Xb</span> <span class="o">=</span> <span class="n">self</span><span class="p">.</span><span class="nf">_add_intercept</span><span class="p">(</span><span class="n">X</span><span class="p">)</span>
 
-        <span class="c1"># More stable than explicitly computing inv(X.T @ X).
+        <span class="c1"># 比显式算 inv(X.T @ X) 稳得多；rcond=None 采用新版默认的奇异值截断规则
+</span>        <span class="c1"># 返回值依次是：解、残差平方和、X 的秩、奇异值
 </span>        <span class="n">self</span><span class="p">.</span><span class="n">theta</span><span class="p">,</span> <span class="n">residuals</span><span class="p">,</span> <span class="n">rank</span><span class="p">,</span> <span class="n">singular_values</span> <span class="o">=</span> <span class="n">np</span><span class="p">.</span><span class="n">linalg</span><span class="p">.</span><span class="nf">lstsq</span><span class="p">(</span>
             <span class="n">Xb</span><span class="p">,</span> <span class="n">y</span><span class="p">,</span> <span class="n">rcond</span><span class="o">=</span><span class="bp">None</span>
         <span class="p">)</span>
-        <span class="k">return</span> <span class="n">self</span>
+        <span class="c1"># rank &lt; Xb.shape[1] 就说明特征间存在完全共线，此时解不唯一
+</span>        <span class="k">return</span> <span class="n">self</span>
 
     <span class="k">def</span> <span class="nf">predict</span><span class="p">(</span><span class="n">self</span><span class="p">,</span> <span class="n">X</span><span class="p">):</span>
         <span class="n">X</span> <span class="o">=</span> <span class="n">np</span><span class="p">.</span><span class="nf">asarray</span><span class="p">(</span><span class="n">X</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
-        <span class="n">Xb</span> <span class="o">=</span> <span class="n">self</span><span class="p">.</span><span class="nf">_add_intercept</span><span class="p">(</span><span class="n">X</span><span class="p">)</span>
-        <span class="k">return</span> <span class="n">Xb</span> <span class="o">@</span> <span class="n">self</span><span class="p">.</span><span class="n">theta</span>
+        <span class="n">Xb</span> <span class="o">=</span> <span class="n">self</span><span class="p">.</span><span class="nf">_add_intercept</span><span class="p">(</span><span class="n">X</span><span class="p">)</span>       <span class="c1"># 预测时也必须拼同样的一列 1
+</span>        <span class="k">return</span> <span class="n">Xb</span> <span class="o">@</span> <span class="n">self</span><span class="p">.</span><span class="n">theta</span>
 </code></pre></div></div> <h3 id="example-2">Example</h3> <div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">X</span> <span class="o">=</span> <span class="n">np</span><span class="p">.</span><span class="nf">array</span><span class="p">([</span>
     <span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">],</span>
     <span class="p">[</span><span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">],</span>
@@ -267,20 +279,21 @@
 
 <span class="nf">print</span><span class="p">(</span><span class="sh">"</span><span class="s">theta:</span><span class="sh">"</span><span class="p">,</span> <span class="n">model</span><span class="p">.</span><span class="n">theta</span><span class="p">)</span>
 <span class="nf">print</span><span class="p">(</span><span class="sh">"</span><span class="s">pred:</span><span class="sh">"</span><span class="p">,</span> <span class="n">model</span><span class="p">.</span><span class="nf">predict</span><span class="p">(</span><span class="n">X_new</span><span class="p">))</span>
-</code></pre></div></div> <h3 id="为什么不要显式求逆">为什么不要显式求逆？</h3> <p>原始公式是：</p> <p>\[ \theta=(X^\top X)^{-1}X^\top y \]</p> <p>但显式计算逆矩阵数值不稳定，且当 \(X^\top X\) 奇异或病态时会失败。更好的做法：</p> <ul> <li> <code>np.linalg.lstsq</code>：基于更稳定的分解求最小二乘。</li> <li> <code>np.linalg.pinv</code>：使用伪逆。</li> <li>Ridge：当共线性强时加入 L2 正则。</li> </ul> <h3 id="ridge-版本">Ridge 版本</h3> <div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">def</span> <span class="nf">ridge_regression</span><span class="p">(</span><span class="n">X</span><span class="p">,</span> <span class="n">y</span><span class="p">,</span> <span class="n">alpha</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span> <span class="n">fit_intercept</span><span class="o">=</span><span class="bp">True</span><span class="p">):</span>
+</code></pre></div></div> <h3 id="为什么不要显式求逆">为什么不要显式求逆？</h3> <p>原始公式是：</p> <p>\[ \theta=(X^\top X)^{-1}X^\top y \]</p> <p>但显式计算逆矩阵数值不稳定，且当 \(X^\top X\) 奇异或病态时会失败。更好的做法：</p> <ul> <li> <code>np.linalg.lstsq</code>：基于更稳定的分解求最小二乘。</li> <li> <code>np.linalg.pinv</code>：使用伪逆。</li> <li>Ridge：当共线性强时加入 L2 正则。</li> </ul> <h3 id="ridge-版本">Ridge 版本</h3> <p>闭式解只需在 \(X^\top X\) 上加一个 \(\alpha I\)：</p> <p>\[ \theta=(X^\top X+\alpha I)^{-1}X^\top y \]</p> <p>这一项的作用不只是「防过拟合」——加在对角线上会把最小的那些奇异值抬起来，\(X^\top X\) 即使原本奇异也变得可逆，所以 Ridge 天然能处理共线性。</p> <div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">def</span> <span class="nf">ridge_regression</span><span class="p">(</span><span class="n">X</span><span class="p">,</span> <span class="n">y</span><span class="p">,</span> <span class="n">alpha</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span> <span class="n">fit_intercept</span><span class="o">=</span><span class="bp">True</span><span class="p">):</span>
     <span class="n">X</span> <span class="o">=</span> <span class="n">np</span><span class="p">.</span><span class="nf">asarray</span><span class="p">(</span><span class="n">X</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
     <span class="n">y</span> <span class="o">=</span> <span class="n">np</span><span class="p">.</span><span class="nf">asarray</span><span class="p">(</span><span class="n">y</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">fit_intercept</span><span class="p">:</span>
-        <span class="n">Xb</span> <span class="o">=</span> <span class="n">np</span><span class="p">.</span><span class="nf">hstack</span><span class="p">([</span><span class="n">np</span><span class="p">.</span><span class="nf">ones</span><span class="p">((</span><span class="n">X</span><span class="p">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="mi">1</span><span class="p">)),</span> <span class="n">X</span><span class="p">])</span>
-    <span class="k">else</span><span class="p">:</span>
+        <span class="n">Xb</span> <span class="o">=</span> <span class="n">np</span><span class="p">.</span><span class="nf">hstack</span><span class="p">([</span><span class="n">np</span><span class="p">.</span><span class="nf">ones</span><span class="p">((</span><span class="n">X</span><span class="p">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="mi">1</span><span class="p">)),</span> <span class="n">X</span><span class="p">])</span>   <span class="c1"># 拼截距列
+</span>    <span class="k">else</span><span class="p">:</span>
         <span class="n">Xb</span> <span class="o">=</span> <span class="n">X</span>
 
     <span class="n">n_features</span> <span class="o">=</span> <span class="n">Xb</span><span class="p">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span>
-    <span class="n">reg</span> <span class="o">=</span> <span class="n">alpha</span> <span class="o">*</span> <span class="n">np</span><span class="p">.</span><span class="nf">eye</span><span class="p">(</span><span class="n">n_features</span><span class="p">)</span>
-    <span class="k">if</span> <span class="n">fit_intercept</span><span class="p">:</span>
-        <span class="n">reg</span><span class="p">[</span><span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">]</span> <span class="o">=</span> <span class="mf">0.0</span>
-
-    <span class="n">theta</span> <span class="o">=</span> <span class="n">np</span><span class="p">.</span><span class="n">linalg</span><span class="p">.</span><span class="nf">solve</span><span class="p">(</span><span class="n">Xb</span><span class="p">.</span><span class="n">T</span> <span class="o">@</span> <span class="n">Xb</span> <span class="o">+</span> <span class="n">reg</span><span class="p">,</span> <span class="n">Xb</span><span class="p">.</span><span class="n">T</span> <span class="o">@</span> <span class="n">y</span><span class="p">)</span>
+    <span class="n">reg</span> <span class="o">=</span> <span class="n">alpha</span> <span class="o">*</span> <span class="n">np</span><span class="p">.</span><span class="nf">eye</span><span class="p">(</span><span class="n">n_features</span><span class="p">)</span>      <span class="c1"># alpha * I，加在 X^T X 的对角线上
+</span>    <span class="k">if</span> <span class="n">fit_intercept</span><span class="p">:</span>
+        <span class="n">reg</span><span class="p">[</span><span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">]</span> <span class="o">=</span> <span class="mf">0.0</span>                   <span class="c1"># 截距项不正则化
+</span>
+    <span class="c1"># 用 solve 而不是 inv：解方程比求逆更稳、更快
+</span>    <span class="n">theta</span> <span class="o">=</span> <span class="n">np</span><span class="p">.</span><span class="n">linalg</span><span class="p">.</span><span class="nf">solve</span><span class="p">(</span><span class="n">Xb</span><span class="p">.</span><span class="n">T</span> <span class="o">@</span> <span class="n">Xb</span> <span class="o">+</span> <span class="n">reg</span><span class="p">,</span> <span class="n">Xb</span><span class="p">.</span><span class="n">T</span> <span class="o">@</span> <span class="n">y</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">theta</span>
 </code></pre></div></div> <hr> <h2 id="31-多项式回归">3.1 多项式回归</h2> <p>多项式回归<strong>不是新算法</strong>，只是「特征扩展 + 多元线性回归」：把 \(x\) 展开成 \([1, x, x^2, \dots]\) 当作新特征，再直接套用上面的线性回归求解器。</p> <div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">def</span> <span class="nf">polynomial_regression_1d</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">y</span><span class="p">,</span> <span class="n">degree</span><span class="o">=</span><span class="mi">3</span><span class="p">):</span>
     <span class="c1"># x: (N,) 一维数据；把 x 变成矩阵 [1, x, x^2, x^3]
@@ -290,31 +303,45 @@
     <span class="c1"># X_poly 形状 (N, degree+1)，完全变成了多元线性回归
 </span>    <span class="n">theta</span><span class="p">,</span> <span class="o">*</span><span class="n">_</span> <span class="o">=</span> <span class="n">np</span><span class="p">.</span><span class="n">linalg</span><span class="p">.</span><span class="nf">lstsq</span><span class="p">(</span><span class="n">X_poly</span><span class="p">,</span> <span class="n">y</span><span class="p">,</span> <span class="n">rcond</span><span class="o">=</span><span class="bp">None</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">theta</span>
-</code></pre></div></div> <p>面试常问的坑：</p> <ul> <li> <strong>过拟合</strong>：degree 越高越容易剧烈震荡去穿过每个训练点（Runge 现象），泛化极差 → 用 Ridge/Lasso 把高次项权重压向 0。</li> <li> <strong>维度灾难</strong>：多特征做高次展开会产生大量交叉项（\(x_1x_2\)、\(x_1^2x_2\) …），特征数急剧膨胀。</li> <li>面试极少让从零手写，多作为概念题；关键是能说清「它本质就是特征工程 + 线性回归」。</li> </ul> <hr> <h2 id="4-softmax">4. Softmax</h2> <p>Softmax 把一堆没有约束的原始分数（logits）变成<strong>和为 1</strong> 的概率分布：先取指数 \(e^{z}\)（保证为正、并放大差距），再除以总和做归一化。</p> <h3 id="稳定实现">稳定实现</h3> <div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kn">import</span> <span class="n">numpy</span> <span class="k">as</span> <span class="n">np</span>
+</code></pre></div></div> <p>面试常问的坑：</p> <ul> <li> <strong>过拟合</strong>：degree 越高越容易剧烈震荡去穿过每个训练点（Runge 现象），泛化极差 → 用 Ridge/Lasso 把高次项权重压向 0。</li> <li> <strong>维度灾难</strong>：多特征做高次展开会产生大量交叉项（\(x_1x_2\)、\(x_1^2x_2\) …），特征数急剧膨胀。</li> <li>面试极少让从零手写，多作为概念题；关键是能说清「它本质就是特征工程 + 线性回归」。</li> </ul> <hr> <h2 id="4-softmax">4. Softmax</h2> <p>Softmax 把一堆没有约束的原始分数（logits）变成<strong>和为 1</strong> 的概率分布：</p> <p>\[ \operatorname{softmax}(z)_i=\frac{e^{z_i}}{\sum_{j}e^{z_j}} \]</p> <p>分子取指数保证结果为正、并放大分数差距，分母是所有项之和保证归一化。</p> <h3 id="稳定实现">稳定实现</h3> <p>真正写的是下面这个等价形式（分子分母同乘 \(e^{-\max_j z_j}\)）：</p> <p>\[ \operatorname{softmax}(z)_i=\frac{e^{z_i-\max_j z_j}}{\sum_k e^{z_k-\max_j z_j}} \]</p> <div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kn">import</span> <span class="n">numpy</span> <span class="k">as</span> <span class="n">np</span>
 
 
 <span class="k">def</span> <span class="nf">softmax</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">axis</span><span class="o">=-</span><span class="mi">1</span><span class="p">):</span>
     <span class="n">x</span> <span class="o">=</span> <span class="n">np</span><span class="p">.</span><span class="nf">asarray</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
-    <span class="n">x_shifted</span> <span class="o">=</span> <span class="n">x</span> <span class="o">-</span> <span class="n">np</span><span class="p">.</span><span class="nf">max</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="n">axis</span><span class="p">,</span> <span class="n">keepdims</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+
+    <span class="c1"># 减去每行最大值：数学上完全等价，但把最大的指数压成 e^0 = 1，杜绝上溢
+</span>    <span class="n">x_shifted</span> <span class="o">=</span> <span class="n">x</span> <span class="o">-</span> <span class="n">np</span><span class="p">.</span><span class="nf">max</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="n">axis</span><span class="p">,</span> <span class="n">keepdims</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
     <span class="n">exp_x</span> <span class="o">=</span> <span class="n">np</span><span class="p">.</span><span class="nf">exp</span><span class="p">(</span><span class="n">x_shifted</span><span class="p">)</span>
-    <span class="k">return</span> <span class="n">exp_x</span> <span class="o">/</span> <span class="n">exp_x</span><span class="p">.</span><span class="nf">sum</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="n">axis</span><span class="p">,</span> <span class="n">keepdims</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
-</code></pre></div></div> <h3 id="cross-entropy">Cross-Entropy</h3> <div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">def</span> <span class="nf">cross_entropy_from_logits</span><span class="p">(</span><span class="n">logits</span><span class="p">,</span> <span class="n">y</span><span class="p">):</span>
+
+    <span class="c1"># keepdims=True 保留被求和的那一维（(batch, 1) 而不是 (batch,)），否则广播会错位
+</span>    <span class="k">return</span> <span class="n">exp_x</span> <span class="o">/</span> <span class="n">exp_x</span><span class="p">.</span><span class="nf">sum</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="n">axis</span><span class="p">,</span> <span class="n">keepdims</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+</code></pre></div></div> <p><strong>为什么不写成更短的那个版本？</strong> 你可能见过这种写法：</p> <div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">def</span> <span class="nf">softmax</span><span class="p">(</span><span class="n">x</span><span class="p">):</span>            <span class="c1"># 只对「一维向量」正确
+</span>    <span class="n">x</span> <span class="o">=</span> <span class="n">x</span> <span class="o">-</span> <span class="n">np</span><span class="p">.</span><span class="nf">max</span><span class="p">(</span><span class="n">x</span><span class="p">)</span>
+    <span class="n">e</span> <span class="o">=</span> <span class="n">np</span><span class="p">.</span><span class="nf">exp</span><span class="p">(</span><span class="n">x</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">e</span> <span class="o">/</span> <span class="n">e</span><span class="p">.</span><span class="nf">sum</span><span class="p">()</span>
+</code></pre></div></div> <p>单条 logits 向量喂进去没问题，但一带 batch 就错了：<code>np.max(x)</code> 取的是<strong>整个矩阵</strong>的最大值，<code>e.sum()</code> 把<strong>所有样本的所有类别</strong>加成一个标量。结果每行不再各自归一化，而是整个矩阵加起来才等于 1，概率全被稀释成 \(1/\text{batch}\) 量级。</p> <p>所以只要输入可能有 batch 维，就必须写 <code>axis=-1, keepdims=True</code> 让每行独立归一化。面试时写带 <code>axis</code> 的版本，并主动说明这个区别。</p> <h3 id="cross-entropy">Cross-Entropy</h3> <p>多分类交叉熵只看<strong>真实类别那一项</strong>的概率：</p> <p>\[ \mathcal L=-\frac1N\sum_{i=1}^{N}\log p_{i,y_i}, \qquad p_{i,k}=\operatorname{softmax}(z_i)_k \]</p> <p>实现上不要先算 softmax 再取 log，而是把两步合并成 <strong>log-softmax</strong>，除法变减法、也不会出现 \(\log 0\)：</p> <p>\[ \log\operatorname{softmax}(z)_k =z_k-\max_j z_j-\log\sum_{m}e^{z_m-\max_j z_j} \]</p> <div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">def</span> <span class="nf">cross_entropy_from_logits</span><span class="p">(</span><span class="n">logits</span><span class="p">,</span> <span class="n">y</span><span class="p">):</span>
     <span class="sh">"""</span><span class="s">
-    logits: shape (batch, num_classes)
-    y: integer labels, shape (batch,)
+    logits: shape (batch, num_classes)，未经 softmax 的原始分数
+    y:      shape (batch,)，整数类别标签（不是 one-hot）
     </span><span class="sh">"""</span>
     <span class="n">logits</span> <span class="o">=</span> <span class="n">np</span><span class="p">.</span><span class="nf">asarray</span><span class="p">(</span><span class="n">logits</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
     <span class="n">y</span> <span class="o">=</span> <span class="n">np</span><span class="p">.</span><span class="nf">asarray</span><span class="p">(</span><span class="n">y</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">int</span><span class="p">)</span>
 
-    <span class="n">shifted</span> <span class="o">=</span> <span class="n">logits</span> <span class="o">-</span> <span class="n">logits</span><span class="p">.</span><span class="nf">max</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">keepdims</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
-    <span class="n">log_probs</span> <span class="o">=</span> <span class="n">shifted</span> <span class="o">-</span> <span class="n">np</span><span class="p">.</span><span class="nf">log</span><span class="p">(</span><span class="n">np</span><span class="p">.</span><span class="nf">exp</span><span class="p">(</span><span class="n">shifted</span><span class="p">).</span><span class="nf">sum</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">keepdims</span><span class="o">=</span><span class="bp">True</span><span class="p">))</span>
-    <span class="k">return</span> <span class="o">-</span><span class="n">log_probs</span><span class="p">[</span><span class="n">np</span><span class="p">.</span><span class="nf">arange</span><span class="p">(</span><span class="n">logits</span><span class="p">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]),</span> <span class="n">y</span><span class="p">].</span><span class="nf">mean</span><span class="p">()</span>
-</code></pre></div></div> <h3 id="两个必说的点">两个必说的点</h3> <ul> <li> <strong>为什么要减最大值？</strong> 直接算 \(e^{z}\)，当 \(z\) 很大（如 1000）时会溢出成 <code>inf</code>。减去每行最大值在数学上<strong>完全等价</strong>（分子分母同乘 \(e^{-\max z}\)），却把指数压回安全范围。这是手写 Softmax 时的必答加分项。</li> <li> <strong>交叉熵吃 logits 还是概率？</strong> 交叉熵本质是 \(-\log(\text{真实类别的预测概率})\)：猜得准（概率接近 1）惩罚趋近 0，猜得离谱（概率接近 0）惩罚巨大。实现上<strong>直接吃 logits</strong> 更好——用 log-sum-exp 把 softmax 和 log 合并（上面 <code>cross_entropy_from_logits</code> 的写法），少一次中间求概率的舍入，数值更稳、速度更快，这也是 PyTorch <code>CrossEntropyLoss</code> 的做法；合并后梯度还特别干净：<strong>softmax 概率 \(-\) one-hot 标签</strong>。若手上只有概率，必须 <code>np.clip(p, 1e-15, 1)</code> 防 <code>log(0)</code>。</li> </ul> <hr> <h2 id="5-scaled-dot-product-attention">5. Scaled Dot-Product Attention</h2> <h3 id="单头-attention">单头 Attention</h3> <div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kn">import</span> <span class="n">numpy</span> <span class="k">as</span> <span class="n">np</span>
+    <span class="c1"># 1. 同样先减每行最大值做稳定化
+</span>    <span class="n">shifted</span> <span class="o">=</span> <span class="n">logits</span> <span class="o">-</span> <span class="n">logits</span><span class="p">.</span><span class="nf">max</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">keepdims</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+
+    <span class="c1"># 2. log-softmax：log(e^s / Σe^s) = s - log(Σe^s)，全程没有除法、也不会 log(0)
+</span>    <span class="n">log_probs</span> <span class="o">=</span> <span class="n">shifted</span> <span class="o">-</span> <span class="n">np</span><span class="p">.</span><span class="nf">log</span><span class="p">(</span><span class="n">np</span><span class="p">.</span><span class="nf">exp</span><span class="p">(</span><span class="n">shifted</span><span class="p">).</span><span class="nf">sum</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">keepdims</span><span class="o">=</span><span class="bp">True</span><span class="p">))</span>
+
+    <span class="c1"># 3. 花式索引取出每个样本真实类别那一项：第 i 行取第 y[i] 列
+</span>    <span class="c1">#    等价于「和 one-hot 相乘再求和」，但不必真的构造 one-hot 矩阵
+</span>    <span class="k">return</span> <span class="o">-</span><span class="n">log_probs</span><span class="p">[</span><span class="n">np</span><span class="p">.</span><span class="nf">arange</span><span class="p">(</span><span class="n">logits</span><span class="p">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]),</span> <span class="n">y</span><span class="p">].</span><span class="nf">mean</span><span class="p">()</span>
+</code></pre></div></div> <h3 id="两个必说的点">两个必说的点</h3> <ul> <li> <strong>为什么要减最大值？</strong> 直接算 \(e^{z}\)，当 \(z\) 很大（如 1000）时会溢出成 <code>inf</code>。减去每行最大值在数学上<strong>完全等价</strong>（分子分母同乘 \(e^{-\max z}\)），却把指数压回安全范围。这是手写 Softmax 时的必答加分项。</li> <li> <strong>交叉熵吃 logits 还是概率？</strong> 交叉熵本质是 \(-\log(\text{真实类别的预测概率})\)：猜得准（概率接近 1）惩罚趋近 0，猜得离谱（概率接近 0）惩罚巨大。实现上<strong>直接吃 logits</strong> 更好——用 log-sum-exp 把 softmax 和 log 合并（上面 <code>cross_entropy_from_logits</code> 的写法），少一次中间求概率的舍入，数值更稳、速度更快，这也是 PyTorch <code>CrossEntropyLoss</code> 的做法；合并后梯度还特别干净：<strong>softmax 概率 \(-\) one-hot 标签</strong>。若手上只有概率，必须 <code>np.clip(p, 1e-15, 1)</code> 防 <code>log(0)</code>。</li> </ul> <hr> <h2 id="5-scaled-dot-product-attention">5. Scaled Dot-Product Attention</h2> <p>\[ \operatorname{Attention}(Q,K,V) =\operatorname{softmax}\!\left(\frac{QK^\top}{\sqrt{d_k}}+M\right)V \]</p> <p>四步：\(QK^\top\) 算出每个 query 和每个 key 的匹配分 → 除 \(\sqrt{d_k}\) 防止 softmax 饱和 → 加 mask 屏蔽不该看的位置 → softmax 归一成权重后去加权 \(V\)。</p> <h3 id="单头-attention">单头 Attention</h3> <div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kn">import</span> <span class="n">numpy</span> <span class="k">as</span> <span class="n">np</span>
 
 
 <span class="k">def</span> <span class="nf">softmax</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">axis</span><span class="o">=-</span><span class="mi">1</span><span class="p">):</span>
-    <span class="n">x</span> <span class="o">=</span> <span class="n">x</span> <span class="o">-</span> <span class="n">np</span><span class="p">.</span><span class="nf">max</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="n">axis</span><span class="p">,</span> <span class="n">keepdims</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
-    <span class="n">exp_x</span> <span class="o">=</span> <span class="n">np</span><span class="p">.</span><span class="nf">exp</span><span class="p">(</span><span class="n">x</span><span class="p">)</span>
+    <span class="n">x</span> <span class="o">=</span> <span class="n">x</span> <span class="o">-</span> <span class="n">np</span><span class="p">.</span><span class="nf">max</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="n">axis</span><span class="p">,</span> <span class="n">keepdims</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>     <span class="c1"># 稳定化：减去每行最大值
+</span>    <span class="n">exp_x</span> <span class="o">=</span> <span class="n">np</span><span class="p">.</span><span class="nf">exp</span><span class="p">(</span><span class="n">x</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">exp_x</span> <span class="o">/</span> <span class="n">np</span><span class="p">.</span><span class="nf">sum</span><span class="p">(</span><span class="n">exp_x</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="n">axis</span><span class="p">,</span> <span class="n">keepdims</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
 
 
@@ -324,25 +351,34 @@
     K: shape (batch, kv_len, d_k)
     V: shape (batch, kv_len, d_v)
     mask: optional, broadcastable to (batch, q_len, kv_len).
-          Use True for positions that are allowed.
+          本实现约定 True = 该位置可见（不同框架约定相反，面试务必说清）
 
     Returns:
         output: shape (batch, q_len, d_v)
         weights: shape (batch, q_len, kv_len)
     </span><span class="sh">"""</span>
     <span class="n">d_k</span> <span class="o">=</span> <span class="n">Q</span><span class="p">.</span><span class="n">shape</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span>
-    <span class="n">scores</span> <span class="o">=</span> <span class="n">Q</span> <span class="o">@</span> <span class="n">np</span><span class="p">.</span><span class="nf">swapaxes</span><span class="p">(</span><span class="n">K</span><span class="p">,</span> <span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="o">-</span><span class="mi">2</span><span class="p">)</span> <span class="o">/</span> <span class="n">np</span><span class="p">.</span><span class="nf">sqrt</span><span class="p">(</span><span class="n">d_k</span><span class="p">)</span>
 
-    <span class="k">if</span> <span class="n">mask</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+    <span class="c1"># 1. 打分并缩放：swapaxes(-1,-2) 是转置最后两维，(q_len,d_k)@(d_k,kv_len) -&gt; (q_len,kv_len)
+</span>    <span class="c1">#    除 sqrt(d_k)：点积是 d_k 项之和、方差随维度线性增长，不缩放会让 softmax 饱和、梯度消失
+</span>    <span class="n">scores</span> <span class="o">=</span> <span class="n">Q</span> <span class="o">@</span> <span class="n">np</span><span class="p">.</span><span class="nf">swapaxes</span><span class="p">(</span><span class="n">K</span><span class="p">,</span> <span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="o">-</span><span class="mi">2</span><span class="p">)</span> <span class="o">/</span> <span class="n">np</span><span class="p">.</span><span class="nf">sqrt</span><span class="p">(</span><span class="n">d_k</span><span class="p">)</span>
+
+    <span class="c1"># 2. 屏蔽：把不可见位置换成一个极小值，softmax 后权重 ≈ 0
+</span>    <span class="c1">#    必须在 softmax 之前做，否则归一化分母里仍混进了这些位置
+</span>    <span class="k">if</span> <span class="n">mask</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
         <span class="n">scores</span> <span class="o">=</span> <span class="n">np</span><span class="p">.</span><span class="nf">where</span><span class="p">(</span><span class="n">mask</span><span class="p">,</span> <span class="n">scores</span><span class="p">,</span> <span class="o">-</span><span class="mf">1e9</span><span class="p">)</span>
 
-    <span class="n">weights</span> <span class="o">=</span> <span class="nf">softmax</span><span class="p">(</span><span class="n">scores</span><span class="p">,</span> <span class="n">axis</span><span class="o">=-</span><span class="mi">1</span><span class="p">)</span>
-    <span class="n">output</span> <span class="o">=</span> <span class="n">weights</span> <span class="o">@</span> <span class="n">V</span>
+    <span class="c1"># 3. 沿 kv_len 维归一化：每个 query 对所有 key 的注意力加起来为 1
+</span>    <span class="n">weights</span> <span class="o">=</span> <span class="nf">softmax</span><span class="p">(</span><span class="n">scores</span><span class="p">,</span> <span class="n">axis</span><span class="o">=-</span><span class="mi">1</span><span class="p">)</span>
+
+    <span class="c1"># 4. 用权重加权求和 V，得到每个 query 位置的输出
+</span>    <span class="n">output</span> <span class="o">=</span> <span class="n">weights</span> <span class="o">@</span> <span class="n">V</span>
     <span class="k">return</span> <span class="n">output</span><span class="p">,</span> <span class="n">weights</span>
 </code></pre></div></div> <h3 id="causal-mask">Causal Mask</h3> <div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">def</span> <span class="nf">causal_mask</span><span class="p">(</span><span class="n">q_len</span><span class="p">,</span> <span class="n">kv_len</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
     <span class="k">if</span> <span class="n">kv_len</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
         <span class="n">kv_len</span> <span class="o">=</span> <span class="n">q_len</span>
-    <span class="c1"># shape (q_len, kv_len), True means visible
+    <span class="c1"># np.tril 取下三角（含对角线）：第 i 行只有前 i+1 列为 True
+</span>    <span class="c1"># 即位置 i 只能看到 &lt;= i 的位置，看不到未来
 </span>    <span class="k">return</span> <span class="n">np</span><span class="p">.</span><span class="nf">tril</span><span class="p">(</span><span class="n">np</span><span class="p">.</span><span class="nf">ones</span><span class="p">((</span><span class="n">q_len</span><span class="p">,</span> <span class="n">kv_len</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">bool</span><span class="p">))</span>
 
 
@@ -385,25 +421,30 @@
 
 <span class="k">def</span> <span class="nf">split_heads</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">num_heads</span><span class="p">):</span>
     <span class="sh">"""</span><span class="s">
+    切蛋糕：把 d_model 平分给 num_heads 个头
     x: shape (batch, seq_len, d_model)
     return: shape (batch, num_heads, seq_len, d_head)
     </span><span class="sh">"""</span>
     <span class="n">batch</span><span class="p">,</span> <span class="n">seq_len</span><span class="p">,</span> <span class="n">d_model</span> <span class="o">=</span> <span class="n">x</span><span class="p">.</span><span class="n">shape</span>
-    <span class="k">assert</span> <span class="n">d_model</span> <span class="o">%</span> <span class="n">num_heads</span> <span class="o">==</span> <span class="mi">0</span>
-    <span class="n">d_head</span> <span class="o">=</span> <span class="n">d_model</span> <span class="o">//</span> <span class="n">num_heads</span>
-    <span class="n">x</span> <span class="o">=</span> <span class="n">x</span><span class="p">.</span><span class="nf">reshape</span><span class="p">(</span><span class="n">batch</span><span class="p">,</span> <span class="n">seq_len</span><span class="p">,</span> <span class="n">num_heads</span><span class="p">,</span> <span class="n">d_head</span><span class="p">)</span>
-    <span class="k">return</span> <span class="n">np</span><span class="p">.</span><span class="nf">transpose</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">3</span><span class="p">))</span>
+    <span class="k">assert</span> <span class="n">d_model</span> <span class="o">%</span> <span class="n">num_heads</span> <span class="o">==</span> <span class="mi">0</span>          <span class="c1"># 必须整除，否则没法平分
+</span>    <span class="n">d_head</span> <span class="o">=</span> <span class="n">d_model</span> <span class="o">//</span> <span class="n">num_heads</span>
+
+    <span class="c1"># 先把最后一维拆成 (num_heads, d_head)
+</span>    <span class="n">x</span> <span class="o">=</span> <span class="n">x</span><span class="p">.</span><span class="nf">reshape</span><span class="p">(</span><span class="n">batch</span><span class="p">,</span> <span class="n">seq_len</span><span class="p">,</span> <span class="n">num_heads</span><span class="p">,</span> <span class="n">d_head</span><span class="p">)</span>
+    <span class="c1"># 再把 num_heads 换到前面 —— 让它变成"批次维"，后面 h 个头就能并行算 attention
+</span>    <span class="k">return</span> <span class="n">np</span><span class="p">.</span><span class="nf">transpose</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">3</span><span class="p">))</span>
 
 
 <span class="k">def</span> <span class="nf">combine_heads</span><span class="p">(</span><span class="n">x</span><span class="p">):</span>
     <span class="sh">"""</span><span class="s">
+    拼回去：split_heads 的逆操作
     x: shape (batch, num_heads, seq_len, d_head)
     return: shape (batch, seq_len, d_model)
     </span><span class="sh">"""</span>
     <span class="n">batch</span><span class="p">,</span> <span class="n">num_heads</span><span class="p">,</span> <span class="n">seq_len</span><span class="p">,</span> <span class="n">d_head</span> <span class="o">=</span> <span class="n">x</span><span class="p">.</span><span class="n">shape</span>
-    <span class="n">x</span> <span class="o">=</span> <span class="n">np</span><span class="p">.</span><span class="nf">transpose</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">3</span><span class="p">))</span>
-    <span class="k">return</span> <span class="n">x</span><span class="p">.</span><span class="nf">reshape</span><span class="p">(</span><span class="n">batch</span><span class="p">,</span> <span class="n">seq_len</span><span class="p">,</span> <span class="n">num_heads</span> <span class="o">*</span> <span class="n">d_head</span><span class="p">)</span>
-
+    <span class="n">x</span> <span class="o">=</span> <span class="n">np</span><span class="p">.</span><span class="nf">transpose</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">3</span><span class="p">))</span>        <span class="c1"># 先把 seq_len 换回第 1 维
+</span>    <span class="k">return</span> <span class="n">x</span><span class="p">.</span><span class="nf">reshape</span><span class="p">(</span><span class="n">batch</span><span class="p">,</span> <span class="n">seq_len</span><span class="p">,</span> <span class="n">num_heads</span> <span class="o">*</span> <span class="n">d_head</span><span class="p">)</span>   <span class="c1"># 再把 h 个头首尾相接
+</span>
 
 <span class="k">def</span> <span class="nf">multi_head_attention</span><span class="p">(</span><span class="n">X</span><span class="p">,</span> <span class="n">Wq</span><span class="p">,</span> <span class="n">Wk</span><span class="p">,</span> <span class="n">Wv</span><span class="p">,</span> <span class="n">Wo</span><span class="p">,</span> <span class="n">num_heads</span><span class="p">,</span> <span class="n">mask</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
     <span class="sh">"""</span><span class="s">
@@ -411,23 +452,30 @@
     Wq/Wk/Wv/Wo: shape (d_model, d_model)
     mask: optional, shape broadcastable to (batch, num_heads, seq_len, seq_len)
     </span><span class="sh">"""</span>
-    <span class="n">Q</span> <span class="o">=</span> <span class="n">X</span> <span class="o">@</span> <span class="n">Wq</span>
+    <span class="c1"># 1. 三次线性投影，把同一个 X 变成 Q/K/V 三种视角（三组权重互相独立，不共享）
+</span>    <span class="n">Q</span> <span class="o">=</span> <span class="n">X</span> <span class="o">@</span> <span class="n">Wq</span>
     <span class="n">K</span> <span class="o">=</span> <span class="n">X</span> <span class="o">@</span> <span class="n">Wk</span>
     <span class="n">V</span> <span class="o">=</span> <span class="n">X</span> <span class="o">@</span> <span class="n">Wv</span>
 
-    <span class="n">Q</span> <span class="o">=</span> <span class="nf">split_heads</span><span class="p">(</span><span class="n">Q</span><span class="p">,</span> <span class="n">num_heads</span><span class="p">)</span>
+    <span class="c1"># 2. 切成多头：注意是先投影再切，等价于每个头有自己的小投影矩阵
+</span>    <span class="n">Q</span> <span class="o">=</span> <span class="nf">split_heads</span><span class="p">(</span><span class="n">Q</span><span class="p">,</span> <span class="n">num_heads</span><span class="p">)</span>
     <span class="n">K</span> <span class="o">=</span> <span class="nf">split_heads</span><span class="p">(</span><span class="n">K</span><span class="p">,</span> <span class="n">num_heads</span><span class="p">)</span>
     <span class="n">V</span> <span class="o">=</span> <span class="nf">split_heads</span><span class="p">(</span><span class="n">V</span><span class="p">,</span> <span class="n">num_heads</span><span class="p">)</span>
 
-    <span class="n">d_head</span> <span class="o">=</span> <span class="n">Q</span><span class="p">.</span><span class="n">shape</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span>
+    <span class="c1"># 3. 每个头各算各的 attention。这里 d_head = d_model / h，
+</span>    <span class="c1">#    所以缩放用的是 sqrt(d_head) 而不是 sqrt(d_model)
+</span>    <span class="n">d_head</span> <span class="o">=</span> <span class="n">Q</span><span class="p">.</span><span class="n">shape</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span>
     <span class="n">scores</span> <span class="o">=</span> <span class="n">Q</span> <span class="o">@</span> <span class="n">np</span><span class="p">.</span><span class="nf">swapaxes</span><span class="p">(</span><span class="n">K</span><span class="p">,</span> <span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="o">-</span><span class="mi">2</span><span class="p">)</span> <span class="o">/</span> <span class="n">np</span><span class="p">.</span><span class="nf">sqrt</span><span class="p">(</span><span class="n">d_head</span><span class="p">)</span>
 
     <span class="k">if</span> <span class="n">mask</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
         <span class="n">scores</span> <span class="o">=</span> <span class="n">np</span><span class="p">.</span><span class="nf">where</span><span class="p">(</span><span class="n">mask</span><span class="p">,</span> <span class="n">scores</span><span class="p">,</span> <span class="o">-</span><span class="mf">1e9</span><span class="p">)</span>
 
     <span class="n">weights</span> <span class="o">=</span> <span class="nf">softmax</span><span class="p">(</span><span class="n">scores</span><span class="p">,</span> <span class="n">axis</span><span class="o">=-</span><span class="mi">1</span><span class="p">)</span>
-    <span class="n">context</span> <span class="o">=</span> <span class="n">weights</span> <span class="o">@</span> <span class="n">V</span>
-    <span class="n">context</span> <span class="o">=</span> <span class="nf">combine_heads</span><span class="p">(</span><span class="n">context</span><span class="p">)</span>
+    <span class="n">context</span> <span class="o">=</span> <span class="n">weights</span> <span class="o">@</span> <span class="n">V</span>                    <span class="c1"># (batch, num_heads, seq_len, d_head)
+</span>
+    <span class="c1"># 4. 拼回 d_model，再过输出投影 Wo 把各头的结论融合起来
+</span>    <span class="c1">#    没有 Wo 的话各头结果只是简单并排堆着，从未交互
+</span>    <span class="n">context</span> <span class="o">=</span> <span class="nf">combine_heads</span><span class="p">(</span><span class="n">context</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">context</span> <span class="o">@</span> <span class="n">Wo</span><span class="p">,</span> <span class="n">weights</span>
 </code></pre></div></div> <h3 id="example-3">Example</h3> <div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">batch</span><span class="p">,</span> <span class="n">seq_len</span><span class="p">,</span> <span class="n">d_model</span><span class="p">,</span> <span class="n">num_heads</span> <span class="o">=</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">5</span><span class="p">,</span> <span class="mi">16</span><span class="p">,</span> <span class="mi">4</span>
 <span class="n">X</span> <span class="o">=</span> <span class="n">np</span><span class="p">.</span><span class="n">random</span><span class="p">.</span><span class="nf">randn</span><span class="p">(</span><span class="n">batch</span><span class="p">,</span> <span class="n">seq_len</span><span class="p">,</span> <span class="n">d_model</span><span class="p">)</span>
@@ -519,6 +567,7 @@
 
 
 <span class="k">def</span> <span class="nf">softmax</span><span class="p">(</span><span class="n">x</span><span class="p">):</span>
+    <span class="sh">"""</span><span class="s">这里输入是单条一维 logits，所以可以用不带 axis 的简版（见第 4 节的说明）</span><span class="sh">"""</span>
     <span class="n">x</span> <span class="o">=</span> <span class="n">x</span> <span class="o">-</span> <span class="n">np</span><span class="p">.</span><span class="nf">max</span><span class="p">(</span><span class="n">x</span><span class="p">)</span>
     <span class="n">e</span> <span class="o">=</span> <span class="n">np</span><span class="p">.</span><span class="nf">exp</span><span class="p">(</span><span class="n">x</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">e</span> <span class="o">/</span> <span class="n">e</span><span class="p">.</span><span class="nf">sum</span><span class="p">()</span>
@@ -527,11 +576,14 @@
 <span class="k">def</span> <span class="nf">top_k_sampling</span><span class="p">(</span><span class="n">logits</span><span class="p">,</span> <span class="n">k</span><span class="o">=</span><span class="mi">50</span><span class="p">,</span> <span class="n">temperature</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span> <span class="n">rng</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
     <span class="sh">"""</span><span class="s">logits: shape (vocab,)；返回采样得到的 token id</span><span class="sh">"""</span>
     <span class="n">rng</span> <span class="o">=</span> <span class="n">rng</span> <span class="ow">or</span> <span class="n">np</span><span class="p">.</span><span class="n">random</span><span class="p">.</span><span class="nf">default_rng</span><span class="p">()</span>
-    <span class="n">logits</span> <span class="o">=</span> <span class="n">np</span><span class="p">.</span><span class="nf">asarray</span><span class="p">(</span><span class="n">logits</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span> <span class="o">/</span> <span class="nf">max</span><span class="p">(</span><span class="n">temperature</span><span class="p">,</span> <span class="mf">1e-8</span><span class="p">)</span>
 
-    <span class="n">k</span> <span class="o">=</span> <span class="nf">min</span><span class="p">(</span><span class="n">k</span><span class="p">,</span> <span class="n">logits</span><span class="p">.</span><span class="n">size</span><span class="p">)</span>
-    <span class="n">idx</span> <span class="o">=</span> <span class="n">np</span><span class="p">.</span><span class="nf">argpartition</span><span class="p">(</span><span class="n">logits</span><span class="p">,</span> <span class="o">-</span><span class="n">k</span><span class="p">)[</span><span class="o">-</span><span class="n">k</span><span class="p">:]</span>      <span class="c1"># O(V)，不必全排序
-</span>    <span class="n">probs</span> <span class="o">=</span> <span class="nf">softmax</span><span class="p">(</span><span class="n">logits</span><span class="p">[</span><span class="n">idx</span><span class="p">])</span>                <span class="c1"># 只在候选集内归一化
+    <span class="c1"># 温度缩放要在 softmax 之前作用于 logits；max(..., 1e-8) 防止 T=0 时除零
+</span>    <span class="n">logits</span> <span class="o">=</span> <span class="n">np</span><span class="p">.</span><span class="nf">asarray</span><span class="p">(</span><span class="n">logits</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span> <span class="o">/</span> <span class="nf">max</span><span class="p">(</span><span class="n">temperature</span><span class="p">,</span> <span class="mf">1e-8</span><span class="p">)</span>
+
+    <span class="n">k</span> <span class="o">=</span> <span class="nf">min</span><span class="p">(</span><span class="n">k</span><span class="p">,</span> <span class="n">logits</span><span class="p">.</span><span class="n">size</span><span class="p">)</span>                     <span class="c1"># k 比词表还大时退化成全采样
+</span>    <span class="c1"># argpartition 只保证第 k 大的元素就位、左右两边各自不排序，O(V) 比全排序 O(VlogV) 快
+</span>    <span class="n">idx</span> <span class="o">=</span> <span class="n">np</span><span class="p">.</span><span class="nf">argpartition</span><span class="p">(</span><span class="n">logits</span><span class="p">,</span> <span class="o">-</span><span class="n">k</span><span class="p">)[</span><span class="o">-</span><span class="n">k</span><span class="p">:]</span>      <span class="c1"># 取最大的 k 个的下标
+</span>    <span class="n">probs</span> <span class="o">=</span> <span class="nf">softmax</span><span class="p">(</span><span class="n">logits</span><span class="p">[</span><span class="n">idx</span><span class="p">])</span>                <span class="c1"># 只在候选集内归一化（截断后必须重新归一）
 </span>    <span class="k">return</span> <span class="nf">int</span><span class="p">(</span><span class="n">rng</span><span class="p">.</span><span class="nf">choice</span><span class="p">(</span><span class="n">idx</span><span class="p">,</span> <span class="n">p</span><span class="o">=</span><span class="n">probs</span><span class="p">))</span>
 
 
@@ -566,9 +618,12 @@
 
 <span class="k">def</span> <span class="nf">information_gain</span><span class="p">(</span><span class="n">y_parent</span><span class="p">,</span> <span class="n">y_left</span><span class="p">,</span> <span class="n">y_right</span><span class="p">):</span>
     <span class="n">n</span> <span class="o">=</span> <span class="nf">len</span><span class="p">(</span><span class="n">y_parent</span><span class="p">)</span>
-    <span class="n">child</span> <span class="o">=</span> <span class="p">(</span><span class="nf">len</span><span class="p">(</span><span class="n">y_left</span><span class="p">)</span> <span class="o">/</span> <span class="n">n</span><span class="p">)</span> <span class="o">*</span> <span class="nf">calculate_entropy</span><span class="p">(</span><span class="n">y_left</span><span class="p">)</span> \
+    <span class="c1"># 子节点熵的加权平均，权重是落进该子节点的样本占比
+</span>    <span class="c1"># 必须加权：否则一个只有 2 个样本的纯净子节点会把整个分裂的评分骗高
+</span>    <span class="n">child</span> <span class="o">=</span> <span class="p">(</span><span class="nf">len</span><span class="p">(</span><span class="n">y_left</span><span class="p">)</span> <span class="o">/</span> <span class="n">n</span><span class="p">)</span> <span class="o">*</span> <span class="nf">calculate_entropy</span><span class="p">(</span><span class="n">y_left</span><span class="p">)</span> \
           <span class="o">+</span> <span class="p">(</span><span class="nf">len</span><span class="p">(</span><span class="n">y_right</span><span class="p">)</span> <span class="o">/</span> <span class="n">n</span><span class="p">)</span> <span class="o">*</span> <span class="nf">calculate_entropy</span><span class="p">(</span><span class="n">y_right</span><span class="p">)</span>
-    <span class="k">return</span> <span class="nf">calculate_entropy</span><span class="p">(</span><span class="n">y_parent</span><span class="p">)</span> <span class="o">-</span> <span class="n">child</span>
+    <span class="c1"># 切分前的混乱度 - 切分后的期望混乱度，越大说明这一刀切得越有效
+</span>    <span class="k">return</span> <span class="nf">calculate_entropy</span><span class="p">(</span><span class="n">y_parent</span><span class="p">)</span> <span class="o">-</span> <span class="n">child</span>
 </code></pre></div></div> <p>面试最常让手写的就是 <code>calculate_entropy</code>；Gini 不纯度 \(1-\sum_c p_c^2\) 是另一个常见替代（CART 默认）。</p> <hr> <h2 id="8-svm支持向量机">8. SVM（支持向量机）</h2> <p>面试极少让手写完整的 SMO 优化算法（太长），重点是能讲清几何直觉：</p> <ul> <li> <strong>最大间隔</strong>：能把两类分开的超平面有无数条，SVM 要找<strong>走在正中间、两边最空旷</strong>的那条——即让「离它最近的点（<strong>支持向量</strong>）到它的间隔」最大化，泛化更好。</li> <li> <strong>核技巧（Kernel Trick）</strong>：线性不可分时（比如一类被另一类包围），用核函数（如 RBF 高斯核）把数据隐式映射到高维空间，在高维里一刀切开，而无需显式计算高维坐标。</li> <li>代码通常直接调库；<code>C</code> 越大越不容忍误分类（间隔越硬、越容易过拟合）。</li> </ul> <div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kn">from</span> <span class="n">sklearn.svm</span> <span class="kn">import</span> <span class="n">SVC</span>
 
 <span class="n">clf</span> <span class="o">=</span> <span class="nc">SVC</span><span class="p">(</span><span class="n">kernel</span><span class="o">=</span><span class="sh">'</span><span class="s">rbf</span><span class="sh">'</span><span class="p">,</span> <span class="n">C</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>     <span class="c1"># RBF（高斯核）支持向量机
