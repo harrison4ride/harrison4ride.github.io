@@ -106,8 +106,8 @@
     },
     {
       "name": "Attention-Aligned Reasoning for Large Language Models",
-      "publisher": "Under review",
-      "releaseDate": "2025",
+      "publisher": "EMNLP 2026 Findings",
+      "releaseDate": "2026",
       "url": "https://arxiv.org/abs/2510.03223",
       "summary": "Reasoning-time attention alignment and prompt engineering for keeping LLMs focused on prompts and intermediate goals."
     },
