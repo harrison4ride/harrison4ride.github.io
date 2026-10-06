@@ -2,7 +2,7 @@
 
 [返回目录](README.md)
 
-本页整理常见手写模型。面试时不只要写出能跑的代码，还要主动说明：
+本页整理常见手写模型，以及 MLE 电面里的高频算法题（Top-K、蓄水池抽样）。面试时不只要写出能跑的代码，还要主动说明：
 
 - 输入输出 shape。
 - 时间/空间复杂度。
@@ -1222,6 +1222,873 @@ def precision_recall_multiclass(y_true, y_pred, num_classes, average='macro'):
 - **macro 和 micro 有什么区别？** macro 对每个类别单独算再取平均，**小类和大类等权**；micro 是把所有类别的 TP/FP/FN 汇总后再算，**被大类主导**（多分类单标签下 micro-F1 等于 accuracy）。关心稀有类就看 macro。
 - **precision 和 recall 谁更重要？** 取决于错误的代价：垃圾邮件过滤怕误杀正常邮件 → 重 precision；癌症筛查怕漏诊 → 重 recall。也可以用 $F_\beta$ 调整偏好，$\beta>1$ 偏 recall。
 - **和 PR-AUC 的关系？** 上面算的是**某一个阈值**下的一组数；扫遍所有阈值把 (recall, precision) 连成曲线，其下面积就是 PR-AUC，不受阈值选择影响。不平衡数据上它比 ROC-AUC 更敏感（见 [02. 模型评估与指标](02-evaluation.md)）。
+
+---
+
+## 9. KNN（K 近邻）
+
+### 原理与直觉
+
+KNN 就是「近朱者赤」：要预测一个新点，就去训练集里找离它最近的 $k$ 个点，让它们投票。
+
+- **分类**：$k$ 个邻居里哪个类别最多，就预测哪个。
+- **回归**：取 $k$ 个邻居标签的平均值。
+
+KNN **没有训练过程**，`fit` 只是把训练数据原样存起来（lazy learning），所有计算都推迟到预测时。这和别的模型正好相反：训练几乎免费，推理很贵。概念部分见 [04. 经典机器学习](04-classical-ml.md) 的 KNN 一节。
+
+### 先写核心版
+
+```python
+import numpy as np
+from collections import Counter
+
+
+def knn_predict_one(X_train, y_train, x, k=3):
+    # 1. x 到每个训练点的距离：(n, d) - (d,) 广播成 (n, d)，沿 d 求和 -> (n,)
+    distances = np.sqrt(((X_train - x) ** 2).sum(axis=1))
+    # 2. 取距离最小的 k 个下标
+    nearest = np.argsort(distances)[:k]
+    # 3. 多数投票：most_common(1) 返回 [(类别, 票数)]
+    return Counter(y_train[nearest]).most_common(1)[0][0]
+```
+
+这个版本一次只预测一个点，预测 $m$ 个点就要在外面套一层 Python 循环。面试官的下一个问题通常是：**能不能不用循环，一次算出所有测试点到所有训练点的距离？**
+
+### 向量化：用展开公式算距离矩阵
+
+KMeans 那节的广播写法 `X[:, None, :] - centroids[None, :, :]` 会生成 $(m, n, d)$ 的中间数组。KMeans 里中心只有 $k$ 个，问题不大；KNN 里训练点有 $n$ 个，$m\times n\times d$ 很容易撑爆内存。更好的办法是把平方距离展开：
+
+$$
+\|a-b\|^2=\|a\|^2-2\,a\cdot b+\|b\|^2
+$$
+
+中间的 $a\cdot b$ 对所有点对一起算，就是一次矩阵乘法 $AB^\top$，内存只需要 $(m,n)$。
+
+```python
+def pairwise_sq_dist(A, B):
+    """
+    A: (m, d)  B: (n, d)
+    返回 (m, n) 的平方距离矩阵：第 i 行第 j 列是 A[i] 和 B[j] 的平方距离
+    """
+    A_sq = (A ** 2).sum(axis=1, keepdims=True)    # (m, 1)
+    B_sq = (B ** 2).sum(axis=1)                   # (n,)，相加时广播成 (1, n)
+    d2 = A_sq - 2 * A @ B.T + B_sq                # (m, 1) - (m, n) + (n,) -> (m, n)
+    return np.maximum(d2, 0)                      # 浮点误差可能算出 -1e-12，截到 0
+```
+
+为什么要 `np.maximum(d2, 0)`：两个点几乎重合时，$\|a\|^2$ 和 $2a\cdot b+\ldots$ 是两个很接近的大数相减，舍入误差会让结果变成一个很小的负数，后面再开根号就得到 `nan`。
+
+### 面试版实现
+
+```python
+class KNN:
+    def __init__(self, k=3, task="classification"):
+        self.k = k
+        self.task = task                  # "classification" 或 "regression"
+
+    def fit(self, X, y):
+        # 没有训练：只是把数据存起来
+        self.X_train = np.asarray(X, dtype=float)
+        self.y_train = np.asarray(y)
+        return self
+
+    def predict(self, X):
+        X = np.asarray(X, dtype=float)
+        k = min(self.k, len(self.X_train))
+        d2 = pairwise_sq_dist(X, self.X_train)            # (m, n)；找最近邻不需要开根号
+
+        # 1. argpartition：只把每行最小的 k 个挪到前面，O(n)，不用 O(n log n) 全排序
+        idx = np.argpartition(d2, k - 1, axis=1)[:, :k]   # (m, k)，这 k 个之间无序
+
+        # 2. 把这 k 个按距离排好，平票时 Counter 会选先出现的类别 = 离得最近的那个
+        order = np.argsort(np.take_along_axis(d2, idx, axis=1), axis=1)
+        idx = np.take_along_axis(idx, order, axis=1)
+        neighbor_y = self.y_train[idx]                    # (m, k)，每行是一个测试点的 k 个邻居标签
+
+        if self.task == "regression":
+            return neighbor_y.mean(axis=1)                # 回归：邻居标签取平均
+        # 分类：每行做一次多数投票
+        return np.array([Counter(row).most_common(1)[0][0] for row in neighbor_y])
+```
+
+### Example
+
+```python
+rng = np.random.default_rng(0)
+# 两团高斯点：类别 0 围绕 (0, 0)，类别 1 围绕 (3, 3)
+X_train = np.vstack([rng.normal(0, 1, (50, 2)), rng.normal(3, 1, (50, 2))])
+y_train = np.array([0] * 50 + [1] * 50)
+X_test = np.vstack([rng.normal(0, 1, (20, 2)), rng.normal(3, 1, (20, 2))])
+y_test = np.array([0] * 20 + [1] * 20)
+
+model = KNN(k=5).fit(X_train, y_train)
+print("test accuracy:", (model.predict(X_test) == y_test).mean())   # test accuracy: 1.0
+```
+
+### 关键追问
+
+- **复杂度？** `fit` 是 $O(1)$，只存数据，但要 $O(nd)$ 内存。预测一个点要算 $n$ 个距离，$O(nd)$，再选 top-k，$O(n)$。$m$ 个测试点合计 $O(mnd)$。
+- **$k$ 怎么选？** $k$ 太小对噪声敏感，决策边界碎，容易过拟合（$k=1$ 时一个标错的点就能带偏它周围一片）。$k$ 太大边界过于平滑，容易欠拟合（$k=n$ 时永远预测训练集里最多的类）。用交叉验证选；二分类取奇数 $k$ 可以避免平票。
+- **平票怎么办？** 上面的实现把邻居按距离排好，平票时选离得最近的那个邻居的类别（sklearn 的 `KNeighborsClassifier` 平票时选标签值最小的类，所以两者只在平票处可能不同）。另一个常见做法是**距离加权投票**：权重取 $1/(\text{距离}+\epsilon)$，近的邻居说话更有分量。
+- **为什么要标准化？** 距离会被尺度最大的特征主导。比如「年龄」在 0 到 100、「年收入」在 0 到 $10^6$，不标准化时年龄几乎不起作用。
+- **为什么在训练集上算 KNN 的准确率会虚高？** 每个训练点最近的邻居就是它自己，距离为 0。$k=1$ 时训练准确率恒为 100%（除非有重复点标签不同）。评估一定要用留出的测试集。
+- **高维时有什么问题？** 维度灾难：维度很高时，最近点和最远点的距离之比趋近于 1，「最近」失去意义（Beyer et al., 1999, *When Is "Nearest Neighbor" Meaningful?*）。实践中先降维，或者用学出来的 embedding。
+- **数据量很大怎么办？** 低维可以用 KD-Tree、Ball Tree 剪枝；高维 embedding 用近似最近邻（ANN）索引，比如 FAISS 的 IVF、HNSW 图索引，用一点召回率换几个数量级的速度。RAG 和推荐召回里的「向量检索」本质上就是 KNN，距离常用 8.1 节的余弦相似度。
+
+---
+
+## 10. 优化器：SGD 与 Momentum
+
+### 原理与直觉
+
+训练就是**下山**：loss 是地形，参数 $\theta$ 是你站的位置，梯度 $g=\nabla_\theta\mathcal L$ 指向上坡最陡的方向。所以每一步往梯度的反方向走一小步：
+
+$$
+\theta_{t+1}=\theta_t-\eta\,g_t
+$$
+
+$\eta$ 是学习率，也就是步长。SGD 里的 S（Stochastic）指 $g_t$ 只用一个 mini-batch 算出来，是全量梯度的一个带噪声的估计：算得快，但每步方向会抖。
+
+Momentum 给下山的人加上**惯性**，像一个小球滚下山坡：
+
+$$
+v_{t+1}=\beta\,v_t+g_t,\qquad
+\theta_{t+1}=\theta_t-\eta\,v_{t+1}
+$$
+
+$v$ 是速度，$\beta$ 是动量系数（通常取 0.9）。把递推展开就看得很清楚：
+
+$$
+v_{t+1}=g_t+\beta\,g_{t-1}+\beta^2 g_{t-2}+\cdots
+$$
+
+速度等于过去所有梯度的加权和，越旧的梯度权重越小。
+
+### 先写核心版
+
+```python
+import numpy as np
+
+
+def sgd_step(w, grad, lr=0.01):
+    return w - lr * grad                   # 沿梯度反方向走一步
+
+
+def momentum_step(w, grad, v, lr=0.01, momentum=0.9):
+    v = momentum * v + grad                # 1. 新速度 = 衰减后的旧速度 + 当前梯度
+    w = w - lr * v                         # 2. 用速度更新参数，梯度只负责改速度
+    return w, v                            # v 要返回，下一步接着用
+```
+
+面试时边写边讲：`v` 和 `w` 形状相同，初始化为 0。第一步 $v=g$，所以第一步和 SGD 完全一样，从第二步开始才体现惯性。
+
+### 为什么 Momentum 能加速？
+
+最典型的场景是一条**又窄又长的山谷**，即不同方向的曲率差很多（Hessian 的条件数大）：
+
+- 横跨山谷的方向很陡：梯度大，而且每一步正负翻转，SGD 在两侧山壁之间来回弹（zig-zag）。
+- 沿着谷底的方向很平：梯度小，但方向始终一致，SGD 走得很慢。
+
+Momentum 的加权和正好对症。来回翻转的分量在求和时互相抵消，震荡被压下去；方向一致的分量不断累加，越滚越快。如果梯度一直是 $g$，速度最终稳定在
+
+$$
+v=\frac{g}{1-\beta}
+$$
+
+即有效步长放大到 $\eta/(1-\beta)$。$\beta=0.9$ 时放大 10 倍。
+
+理论上，对二次函数，梯度下降需要的迭代次数正比于条件数 $\kappa$，调好参数的 Momentum 只需要正比于 $\sqrt\kappa$（Polyak, 1964）。Distill 的 [Why Momentum Really Works](https://distill.pub/2017/momentum/) 有交互式的可视化。
+
+### 什么情况下会震荡？
+
+拿最简单的一维二次函数 $f(x)=\tfrac12\lambda x^2$ 看，$\lambda$ 是曲率，梯度是 $\lambda x$。SGD 的一步变成：
+
+$$
+x_{t+1}=(1-\eta\lambda)\,x_t
+$$
+
+- $\eta\lambda<1$：每步按比例缩小，平稳收敛。
+- $1<\eta\lambda<2$：$1-\eta\lambda$ 是负数，$x$ **每步换号**，在最低点两侧来回跳，幅度逐步缩小。
+- $\eta\lambda>2$：每步幅度放大，**发散**。
+
+所以学习率的安全上限是 $2/\lambda_{\max}$，由最陡的方向决定。山谷里的 zig-zag 就是这么来的：学习率受最陡方向限制不能再大，最陡方向已经 $\eta\lambda>1$ 在来回跳，最平方向的 $\eta\lambda$ 却很小，走得很慢。
+
+Momentum 自己也会震荡。$\beta$ 太大时惯性太强，小球冲过最低点，要来回摆很多次才停。在这个二次函数上可以算出，摆动幅度每步只衰减为原来的 $\sqrt\beta$ 倍：$\beta=0.9$ 时约 90 步衰减到 1%，$\beta=0.99$ 时要约 900 步。
+
+第三种震荡来自 mini-batch 噪声：到了最低点附近，loss 不再下降，而是上下抖。解决办法是学习率衰减（step decay、cosine decay）或者加大 batch。
+
+### 学习率和 β 的直觉
+
+- **学习率 $\eta$ 是步长。** 太小走不动，太大在最陡方向来回跳甚至发散。调参时按对数尺度试（0.1、0.01、0.001），训练中配合 warmup 和衰减。
+- **动量 $\beta$ 是记忆长度。** 它大致相当于对最近 $1/(1-\beta)$ 步的梯度做平均：0.9 约 10 步，0.99 约 100 步。
+- **两者要一起调。** 有效步长是 $\eta/(1-\beta)$。把 $\beta$ 从 0.9 提到 0.99，有效步长放大 10 倍，$\eta$ 通常要相应调小。
+
+### 面试版实现（仿 PyTorch 接口）
+
+```python
+class SGD:
+    def __init__(self, params, lr=0.01, momentum=0.0, weight_decay=0.0, nesterov=False):
+        self.params = params                    # 参数数组的列表，step 里会原地修改
+        self.lr = lr
+        self.momentum = momentum
+        self.weight_decay = weight_decay
+        self.nesterov = nesterov
+        self.velocities = [np.zeros_like(p) for p in params]   # 每个参数一个速度，形状相同
+
+    def step(self, grads):
+        for p, g, v in zip(self.params, grads, self.velocities):
+            if self.weight_decay > 0:
+                g = g + self.weight_decay * p   # L2 正则的梯度就是 lambda * w
+            if self.momentum > 0:
+                v *= self.momentum              # 1. 衰减旧速度（原地改，self.velocities 才记得住）
+                v += g                          # 2. 加上当前梯度
+                # Nesterov 变体（PyTorch 的写法，见下方追问）
+                g = g + self.momentum * v if self.nesterov else v
+            p -= self.lr * g                    # 3. 原地更新：模型里引用的是同一个数组
+```
+
+### Example：在窄山谷里比一比
+
+```python
+def ravine_grad(w):
+    # f(x, y) = 0.5 * (x^2 + 100 * y^2)：y 方向比 x 方向陡 100 倍
+    return np.array([1.0, 100.0]) * w
+
+
+def steps_to_converge(use_momentum, lr=0.018, momentum=0.9, tol=1e-3, max_steps=5000):
+    w = np.array([10.0, 1.0])
+    v = np.zeros_like(w)
+    for t in range(1, max_steps + 1):
+        g = ravine_grad(w)
+        if use_momentum:
+            w, v = momentum_step(w, g, v, lr, momentum)
+        else:
+            w = sgd_step(w, g, lr)
+        if np.linalg.norm(w) < tol:         # 离最低点 (0, 0) 足够近就停
+            return t
+    return max_steps
+
+
+print("GD      :", steps_to_converge(False))   # GD      : 508
+print("Momentum:", steps_to_converge(True))    # Momentum: 138
+```
+
+这里的梯度是精确的，所以严格说是 GD。$y$ 方向 $\eta\lambda=0.018\times100=1.8$，落在 1 到 2 之间：GD 的 $y$ 坐标依次是 $1,-0.8,0.64,-0.512,\ldots$，每步换号。$x$ 方向 $\eta\lambda=0.018$，每步只缩小 1.8%，所以 GD 需要 508 步。同样的学习率加上 $\beta=0.9$ 的 Momentum，只要 138 步。
+
+### 延伸：Adam
+
+问完 Momentum，面试官常接着问 Adam。Adam 等于 Momentum（一阶矩：梯度的滑动平均）加 RMSProp（二阶矩：梯度平方的滑动平均，给每个参数单独定步长），再加偏差修正：
+
+$$
+m_t=\beta_1 m_{t-1}+(1-\beta_1)\,g_t,\qquad
+v_t=\beta_2 v_{t-1}+(1-\beta_2)\,g_t^2
+$$
+
+$$
+\hat m_t=\frac{m_t}{1-\beta_1^t},\qquad
+\hat v_t=\frac{v_t}{1-\beta_2^t},\qquad
+\theta_t=\theta_{t-1}-\eta\,\frac{\hat m_t}{\sqrt{\hat v_t}+\epsilon}
+$$
+
+注意这里的 $v$ 是梯度平方的平均，和 Momentum 的速度 $v$ 含义不同。
+
+```python
+class Adam:
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8):
+        self.params = params
+        self.lr = lr
+        self.beta1, self.beta2 = betas
+        self.eps = eps
+        self.m = [np.zeros_like(p) for p in params]   # 一阶矩：管方向
+        self.v = [np.zeros_like(p) for p in params]   # 二阶矩：管每个参数的步长
+        self.t = 0                                    # 步数，偏差修正要用
+
+    def step(self, grads):
+        self.t += 1
+        for p, g, m, v in zip(self.params, grads, self.m, self.v):
+            m *= self.beta1
+            m += (1 - self.beta1) * g
+            v *= self.beta2
+            v += (1 - self.beta2) * g * g
+            # m、v 从 0 起步，前几步被拉向 0，除以 (1 - beta^t) 把偏差修回来
+            m_hat = m / (1 - self.beta1 ** self.t)
+            v_hat = v / (1 - self.beta2 ** self.t)
+            p -= self.lr * m_hat / (np.sqrt(v_hat) + self.eps)
+```
+
+偏差修正的直觉：第一步 $m_1=(1-\beta_1)g_1=0.1\,g_1$，明显偏小；除以 $1-\beta_1^1=0.1$ 正好还原成 $g_1$。
+
+### 关键追问
+
+- **Momentum 为什么能加速收敛？** 方向一致的梯度分量累加，有效步长变成 $\eta/(1-\beta)$；来回翻转的分量互相抵消。在病态（条件数大）的问题上效果最明显。
+- **什么情况下会震荡？** 三种：学习率超过 $1/\lambda_{\max}$ 开始换号来回跳，超过 $2/\lambda_{\max}$ 发散；$\beta$ 太大，冲过头来回摆；mini-batch 噪声让参数在最低点附近抖，靠学习率衰减解决。
+- **为什么 `v *= momentum` 必须原地写？** 写成 `v = momentum * v + g` 会新建一个数组，`self.velocities` 里存的速度永远是 0，Momentum 悄悄退化成 SGD，而且不报错。`p -= ...` 同理，必须原地改模型持有的那个数组。
+- **Momentum 有好几种写法，等价吗？** PyTorch 写 $v\leftarrow\beta v+g,\ \theta\leftarrow\theta-\eta v$；CS231n 写 $v\leftarrow\beta v-\eta g,\ \theta\leftarrow\theta+v$。学习率固定时两者完全等价，后者的 $v$ 就是前者的 $-\eta v$。吴恩达课上的写法 $v\leftarrow\beta v+(1-\beta)g$ 多乘了 $(1-\beta)$，等价于把学习率换成 $\eta(1-\beta)$，换写法时学习率要跟着换。
+- **Nesterov 有什么不同？** 普通 Momentum 在当前位置算梯度。Nesterov 先按惯性往前看一步，在预估的新位置算梯度，冲过头时能更早刹车。PyTorch 把参数直接存在「往前看一步」的位置上，推导后更新量变成 $g+\beta v$，不用额外算一次梯度。
+- **SGD 和 Adam 怎么选？** Adam 给每个参数自适应步长，对学习率不太敏感、收敛快，Transformer 和 LLM 基本都用它的变体 AdamW。SGD + Momentum 在一些 CV 任务上泛化更好（Wilson et al., 2017, *The Marginal Value of Adaptive Gradient Methods in Machine Learning*），而且省显存：Adam 每个参数要多存 $m$、$v$ 两份状态，SGD + Momentum 只多存一份速度。
+- **AdamW 改了什么？** Adam 把 L2 正则加进梯度后，正则项也会被 $\sqrt{\hat v}$ 除掉，梯度大的参数被衰减得少。AdamW 把 weight decay 从梯度里拿出来，单独做一步 `p -= lr * wd * p`。
+
+---
+
+## 11. NumPy 手写神经网络层
+
+### 原理：每层只做两件事
+
+反向传播就是链式法则。把网络拆成一层一层，每层只实现两个函数：
+
+- `forward(x)`：算输出，并把 backward 要用的东西**缓存**起来。
+- `backward(dout)`：拿到上游传回来的梯度 $\partial\mathcal L/\partial\text{out}$，算出参数梯度，并返回 $\partial\mathcal L/\partial x$ 继续往前传。
+
+写 backward 时最有用的一条规则：**梯度和它对应的变量形状完全相同。** $W$ 是 $(D_{in},D_{out})$，$dW$ 就必须是 $(D_{in},D_{out})$。很多时候不用推导，把形状凑对就能写出正确的矩阵乘法。面试时边写边把每一步的形状念出来。
+
+### Linear 层
+
+前向：
+
+$$
+Y=XW+b,\qquad X:(N,D_{in}),\quad W:(D_{in},D_{out}),\quad b:(D_{out},),\quad Y:(N,D_{out})
+$$
+
+反向（$dY$ 是上游传来的梯度，形状 $(N,D_{out})$）：
+
+$$
+dX=dY\,W^\top,\qquad dW=X^\top dY,\qquad db=\sum_{i=1}^{N}dY_{i,:}
+$$
+
+用凑形状的方法检查一遍：
+
+- $dW$ 要 $(D_{in},D_{out})$。手上有 $X:(N,D_{in})$ 和 $dY:(N,D_{out})$，唯一能凑出来的是 $X^\top dY$：$(D_{in},N)\times(N,D_{out})$。
+- $dX$ 要 $(N,D_{in})$，只能是 $dY\,W^\top$：$(N,D_{out})\times(D_{out},D_{in})$。
+- $db$ 要 $(D_{out},)$。前向时 $b$ 被**广播**加到了 $N$ 行上，相当于用了 $N$ 次，反向就要把 $N$ 行的梯度**加起来**。规则是：前向广播，反向求和。
+
+想严格推导也只要一行。因为 $Y_{ij}=\sum_k X_{ik}W_{kj}+b_j$，所以
+
+$$
+\frac{\partial\mathcal L}{\partial W_{kj}}=\sum_i\frac{\partial\mathcal L}{\partial Y_{ij}}\,X_{ik}=(X^\top dY)_{kj}
+$$
+
+```python
+import numpy as np
+
+
+def linear_forward(X, W, b):
+    out = X @ W + b                # (N, D_in) @ (D_in, D_out) + (D_out,) -> (N, D_out)
+    cache = (X, W)                 # backward 要用 X 算 dW，用 W 算 dX
+    return out, cache
+
+
+def linear_backward(dout, cache):
+    X, W = cache
+    dX = dout @ W.T                # (N, D_out) @ (D_out, D_in) -> (N, D_in)
+    dW = X.T @ dout                # (D_in, N) @ (N, D_out) -> (D_in, D_out)
+    db = dout.sum(axis=0)          # (N, D_out) -> (D_out,)：前向广播，反向求和
+    return dX, dW, db
+```
+
+### ReLU
+
+前向是 $\max(0,x)$。反向时，前向被截成 0 的位置梯度也是 0，其余位置原样传回：
+
+```python
+def relu_forward(x):
+    return np.maximum(0, x), x     # 缓存输入：backward 要知道哪些位置 > 0
+
+
+def relu_backward(dout, x):
+    return dout * (x > 0)          # 形状不变：(N, D) -> (N, D)
+```
+
+### Softmax + Cross-Entropy 的反向
+
+第 4 节提过结论，这里补上推导：
+
+$$
+\frac{\partial\mathcal L}{\partial z}=\frac{1}{N}\big(p-\text{onehot}(y)\big),\qquad p=\operatorname{softmax}(z)
+$$
+
+走 log-softmax 推导最省事。单个样本的 loss 是
+
+$$
+\mathcal L=-\log p_y=-z_y+\log\sum_j e^{z_j}
+$$
+
+对 $z_k$ 求导：第一项只在 $k=y$ 时贡献 $-1$；第二项的导数是 $e^{z_k}/\sum_j e^{z_j}$，正好是 $p_k$。合起来就是 $p_k-\mathbf{1}[k=y]$。batch 上取了平均，梯度再除以 $N$。
+
+如果面试官要求走 softmax 的 Jacobian：$\partial p_i/\partial z_j=p_i(\delta_{ij}-p_j)$，乘上交叉熵的 $\partial\mathcal L/\partial p_i=-\mathbf{1}[i=y]/p_i$ 再对 $i$ 求和，结果相同，只是步骤多一些。
+
+```python
+def softmax_cross_entropy(logits, y):
+    """
+    logits: (N, C) 未经 softmax 的分数
+    y:      (N,) 整数标签
+    返回 loss（标量）和 dlogits（N, C）
+    """
+    N = logits.shape[0]
+    shifted = logits - logits.max(axis=1, keepdims=True)                      # 稳定化
+    log_probs = shifted - np.log(np.exp(shifted).sum(axis=1, keepdims=True))  # log-softmax
+    loss = -log_probs[np.arange(N), y].mean()
+
+    dlogits = np.exp(log_probs)            # 1. 拿到概率 p，(N, C)；exp 生成新数组，可以放心原地改
+    dlogits[np.arange(N), y] -= 1          # 2. 每行真实类别那一列减 1：p - onehot
+    dlogits /= N                           # 3. loss 对 batch 取了平均，梯度也要除以 N
+    return loss, dlogits
+```
+
+### 梯度检查：怎么证明 backward 写对了
+
+用数值微分算一遍梯度，和解析梯度比。中心差分比单边差分准得多：
+
+$$
+\frac{\partial f}{\partial x}\approx\frac{f(x+h)-f(x-h)}{2h}
+$$
+
+```python
+def numerical_grad(f, x, h=1e-5):
+    """f: 无参函数，返回标量 loss；x: 参数数组，会被临时扰动"""
+    grad = np.zeros_like(x)
+    for i in range(x.size):
+        old = x.flat[i]
+        x.flat[i] = old + h
+        f_plus = f()
+        x.flat[i] = old - h
+        f_minus = f()
+        x.flat[i] = old                    # 一定要还原，否则后面的参数全错
+        grad.flat[i] = (f_plus - f_minus) / (2 * h)
+    return grad
+
+
+def rel_error(a, b):
+    return np.max(np.abs(a - b) / np.maximum(1e-8, np.abs(a) + np.abs(b)))
+```
+
+检查 Linear 层时有个小技巧：令 $\mathcal L=\sum(\text{out}\odot dY)$，则 $\partial\mathcal L/\partial\text{out}$ 恰好等于 $dY$，这样就能检查任意一个上游梯度。
+
+```python
+rng = np.random.default_rng(0)
+X = rng.standard_normal((4, 3))
+W = rng.standard_normal((3, 5))
+b = rng.standard_normal(5)
+dout = rng.standard_normal((4, 5))           # 随便造一个上游梯度
+
+loss_fn = lambda: np.sum(linear_forward(X, W, b)[0] * dout)
+
+_, cache = linear_forward(X, W, b)
+dX, dW, db = linear_backward(dout, cache)
+print(rel_error(dX, numerical_grad(loss_fn, X)))   # 三个结果都在 1e-8 以下，说明写对了
+print(rel_error(dW, numerical_grad(loss_fn, W)))
+print(rel_error(db, numerical_grad(loss_fn, b)))
+```
+
+经验值（float64）：相对误差小于 $10^{-7}$ 基本没问题，大于 $10^{-3}$ 几乎一定有 bug。ReLU 在 0 点不可导，扰动刚好跨过 0 时数值梯度会不准，所以检查时用随机输入，不要用整数。
+
+### 拼起来：两层 MLP + Momentum
+
+把上面几层串成 Linear → ReLU → Linear → Softmax CE，用第 10 节的 `SGD` 训练。前向从左往右，反向从右往左，每层把梯度交给前一层。
+
+```python
+def train_mlp(X, y, hidden=16, num_classes=2, epochs=100, batch_size=32,
+              lr=0.1, momentum=0.9, seed=0):
+    rng = np.random.default_rng(seed)
+    D = X.shape[1]
+    # He 初始化：配合 ReLU，让每层输出的方差大致不变
+    W1 = rng.standard_normal((D, hidden)) * np.sqrt(2.0 / D)
+    b1 = np.zeros(hidden)
+    W2 = rng.standard_normal((hidden, num_classes)) * np.sqrt(2.0 / hidden)
+    b2 = np.zeros(num_classes)
+    opt = SGD([W1, b1, W2, b2], lr=lr, momentum=momentum)    # 第 10 节的优化器
+
+    N = X.shape[0]
+    for epoch in range(epochs):
+        perm = rng.permutation(N)                    # 每个 epoch 打乱一次
+        for start in range(0, N, batch_size):
+            idx = perm[start:start + batch_size]     # 取一个 mini-batch
+            xb, yb = X[idx], y[idx]
+
+            # 前向：(B, D) -> (B, hidden) -> (B, hidden) -> (B, C)
+            h, cache1 = linear_forward(xb, W1, b1)
+            a, relu_cache = relu_forward(h)
+            logits, cache2 = linear_forward(a, W2, b2)
+            loss, dlogits = softmax_cross_entropy(logits, yb)
+
+            # 反向：倒着走一遍
+            da, dW2, db2 = linear_backward(dlogits, cache2)
+            dh = relu_backward(da, relu_cache)
+            _, dW1, db1 = linear_backward(dh, cache1)
+
+            opt.step([dW1, db1, dW2, db2])           # 顺序要和参数列表一一对应
+    return W1, b1, W2, b2
+
+
+rng = np.random.default_rng(42)
+X = rng.standard_normal((400, 2))
+y = (X[:, 0] * X[:, 1] > 0).astype(int)      # 一三象限为 1，二四象限为 0：一条直线分不开，逻辑回归只有 0.59
+
+W1, b1, W2, b2 = train_mlp(X, y)
+logits = np.maximum(0, X @ W1 + b1) @ W2 + b2
+print("train accuracy:", (logits.argmax(axis=1) == y).mean())   # train accuracy: 0.9925
+```
+
+### 关键追问
+
+- **为什么 `db` 要 `sum(axis=0)`？** 前向时同一个 $b$ 被广播加到 $N$ 个样本上，相当于用了 $N$ 次，每次使用都贡献一份梯度，反向要全部加起来。
+- **为什么 forward 要缓存输入？** $dW=X^\top dY$ 需要 $X$；ReLU 的反向要知道哪里大于 0。这也是训练比推理费显存的原因：每层的激活都要留到反向用完。
+- **常见 bug 有哪些？** softmax CE 的梯度忘了除以 $N$，等于把学习率放大了 $N$ 倍。直接在 `probs` 上原地改 `probs[range(N), y] -= 1`，把前向算好的概率也改坏了，要先 `.copy()`。参数梯度和参数对不上号，比如把 `db1` 传给了 `W1`。
+- **权重为什么不能全初始化为 0？** 同一层所有神经元会算出一样的输出、拿到一样的梯度，永远一样，等于只有一个神经元（对称性问题）。偏置初始化为 0 没关系。
+- **为什么用 He 初始化？** ReLU 会把一半的输入截成 0，输出方差减半；权重方差取 $2/D_{in}$ 正好补回来，深层网络的信号才不会逐层衰减。tanh、sigmoid 配 Xavier 初始化（方差 $2/(D_{in}+D_{out})$）。
+
+---
+
+## 11.1 BatchNorm
+
+### 原理与直觉
+
+BatchNorm 对每个特征，用**当前 batch** 的均值和方差做标准化，再乘可学习的 $\gamma$、加 $\beta$：
+
+$$
+\mu=\frac1N\sum_{i=1}^{N}x_i,\qquad
+\sigma^2=\frac1N\sum_{i=1}^{N}(x_i-\mu)^2,\qquad
+\hat x=\frac{x-\mu}{\sqrt{\sigma^2+\epsilon}},\qquad
+y=\gamma\,\hat x+\beta
+$$
+
+公式和 6.2 节的 LayerNorm 完全一样，区别只在统计量沿哪个轴算：BatchNorm 沿 **batch 维**（`axis=0`，每个特征跨样本求均值），LayerNorm 沿**特征维**（`axis=-1`，每个样本跨特征求均值）。
+
+面经里最常考的是 **训练和推理的行为不同**：
+
+- **训练**：用当前 batch 的 $\mu,\sigma^2$；同时用滑动平均累积 `running_mean`、`running_var`。
+- **推理**：batch 可能只有 1 条，统计量没有意义，所以改用训练时累积好的 `running_mean`、`running_var`。
+
+### 先写核心版（只有训练前向）
+
+```python
+import numpy as np
+
+
+def batchnorm_forward_train(x, gamma, beta, eps=1e-5):
+    # x: (N, D)；gamma, beta: (D,)
+    mu = x.mean(axis=0)                    # (D,) 每个特征一个均值：沿 batch 维
+    var = x.var(axis=0)                    # (D,) 有偏方差，除以 N
+    x_hat = (x - mu) / np.sqrt(var + eps)  # (N, D) 标准化
+    return gamma * x_hat + beta            # (N, D) 缩放平移，gamma、beta 广播到每一行
+```
+
+### 面试版实现（含 running 统计量和 backward）
+
+```python
+class BatchNorm1d:
+    def __init__(self, dim, momentum=0.1, eps=1e-5):
+        self.gamma = np.ones(dim)                 # 初始化成恒等变换：y = x_hat
+        self.beta = np.zeros(dim)
+        self.running_mean = np.zeros(dim)
+        self.running_var = np.ones(dim)
+        self.momentum = momentum                  # PyTorch 约定：新 batch 的统计量占 0.1
+        self.eps = eps
+
+    def forward(self, x, training=True):
+        if training:
+            mu = x.mean(axis=0)                   # (D,)
+            var = x.var(axis=0)                   # (D,)
+            # 滑动平均，留给推理用
+            self.running_mean = (1 - self.momentum) * self.running_mean + self.momentum * mu
+            self.running_var = (1 - self.momentum) * self.running_var + self.momentum * var
+        else:
+            mu, var = self.running_mean, self.running_var    # 推理：用累积的统计量
+
+        self.inv_std = 1.0 / np.sqrt(var + self.eps)         # (D,)
+        self.x_hat = (x - mu) * self.inv_std                 # (N, D)，backward 要用
+        return self.gamma * self.x_hat + self.beta
+
+    def backward(self, dout):
+        """只适用于 training=True 的前向：这时 mu 和 var 也是 x 的函数"""
+        N = dout.shape[0]
+        self.dgamma = (dout * self.x_hat).sum(axis=0)        # (D,)
+        self.dbeta = dout.sum(axis=0)                        # (D,) 前向广播，反向求和
+        dx_hat = dout * self.gamma                           # (N, D)
+        # 化简后的结果，三项分别来自：x 直接的路径、经过 mu 的路径、经过 var 的路径
+        dx = self.inv_std / N * (
+            N * dx_hat - dx_hat.sum(axis=0) - self.x_hat * (dx_hat * self.x_hat).sum(axis=0)
+        )
+        return dx                                            # (N, D)
+```
+
+backward 的完整推导比较长，面试一般只要求 forward。backward 记住结论，并且会用上一节的梯度检查验证：
+
+```python
+rng = np.random.default_rng(0)
+x = rng.standard_normal((8, 4)) * 3 + 1
+dout = rng.standard_normal((8, 4))
+bn = BatchNorm1d(4)
+bn.gamma = rng.standard_normal(4)
+bn.beta = rng.standard_normal(4)
+
+bn.forward(x)
+dx = bn.backward(dout)
+loss_fn = lambda: np.sum(bn.forward(x) * dout)
+print(rel_error(dx, numerical_grad(loss_fn, x)))                # 约 2e-8，低于 1e-7 的经验线
+print(rel_error(bn.dgamma, numerical_grad(loss_fn, bn.gamma)))
+```
+
+### 关键追问
+
+- **BatchNorm 沿哪个轴？** 全连接层的输入是 $(N,D)$，沿 `axis=0`。卷积层的输入是 $(N,C,H,W)$，每个通道一组统计量，沿 `axis=(0, 2, 3)`。
+- **训练和推理有什么不同？** 训练用当前 batch 的统计量，推理用 running 统计量。PyTorch 里靠 `model.train()` 和 `model.eval()` 切换，推理前忘了调 `eval()` 是经典 bug：结果会随 batch 里其他样本变化。
+- **为什么要 $\gamma$ 和 $\beta$？** 强行标准化会限制表达能力，比如 sigmoid 前的输入被压到 0 附近，只剩近似线性的一段。有了 $\gamma,\beta$，网络可以学回需要的尺度和偏移；$\gamma=\sqrt{\sigma^2+\epsilon}$、$\beta=\mu$ 时完全还原原始输入。
+- **running_var 用有偏还是无偏方差？** 标准化当前 batch 用有偏方差（除以 $N$）。PyTorch 更新 `running_var` 时用的是无偏方差（除以 $N-1$），上面的实现为了简单没有区分。
+- **batch 很小时会怎样？** 统计量噪声很大，效果明显变差。batch 为 1 时方差恒为 0，输出全是 $\beta$，PyTorch 在训练模式下会直接报错。这时改用 LayerNorm 或 GroupNorm，它们不依赖 batch。
+- **BatchNorm 为什么有效？** 原论文的解释是减少 internal covariate shift。后来的研究（Santurkar et al., 2018, *How Does Batch Normalization Help Optimization?*）认为主要原因是让 loss 地形更平滑，允许用更大的学习率。
+
+---
+
+## 12. Top-K 问题（堆）
+
+这一节是算法题：从 $n$ 个元素里找最大的 $k$ 个。它和 6.4 节解码时的 Top-K 采样是两个不同的问题。
+
+### 原理与直觉
+
+维护一个**大小为 $k$ 的最小堆**。堆顶是当前 top-k 里最小的那个，可以把它看作**入围门槛**：
+
+- 堆没满：新元素直接进堆。
+- 堆满了：新元素比门槛大，就把门槛踢出去，新元素进堆；否则直接丢掉。
+
+扫完一遍，堆里剩下的就是最大的 $k$ 个。
+
+为什么找最大的 $k$ 个反而用最小堆？因为每来一个新元素，要和 top-k 里**最弱**的那个比。最小堆把最弱的放在堆顶，查看是 $O(1)$，替换是 $O(\log k)$。
+
+### 先写核心版
+
+```python
+import heapq
+
+
+def top_k(nums, k):
+    heap = []                                  # 最小堆，最多 k 个元素；heap[0] 是门槛
+    for x in nums:
+        if len(heap) < k:
+            heapq.heappush(heap, x)            # 1. 没满：直接放
+        elif x > heap[0]:
+            heapq.heapreplace(heap, x)         # 2. 比门槛大：弹出门槛、放进 x，一次完成
+    return sorted(heap, reverse=True)          # 3. 最后把 k 个排一下序，O(k log k)
+```
+
+`heapq.heapreplace` 等于先 `heappop` 再 `heappush`，但只做一次调整，更快。Python 自带的 `heapq.nlargest(k, nums)` 做的是同一件事，面试时要会手写，也要知道有现成的。
+
+### 复杂度：为什么不全排序
+
+| 方法                     | 时间                                   | 内存里要放多少数据 | 能处理数据流吗       |
+| ------------------------ | -------------------------------------- | ------------------ | -------------------- |
+| `sorted(nums)[-k:]`      | $O(n\log n)$                           | 全部 $n$ 个        | 不能，要先拿到全部数据 |
+| 大小为 $k$ 的最小堆      | $O(n\log k)$                           | $k$ 个             | 能，遍历一次         |
+| 快速选择（quickselect）  | 平均 $O(n)$，最坏 $O(n^2)$             | 全部 $n$ 个        | 不能                 |
+
+$n$ 个元素每个最多做一次堆操作，每次 $O(\log k)$，合计 $O(n\log k)$。$k$ 远小于 $n$ 时，$\log k$ 比 $\log n$ 小很多。更关键的是内存：堆只占 $O(k)$，数据可以边读边丢，$n$ 是十亿条日志也没问题。全排序还把我们不关心的 $n-k$ 个元素也排好了，这部分工作全是浪费。
+
+### 变体 1：数据流中的 Top-K
+
+数据一条条到来，随时要能查询当前的 top-k。和上面的逻辑完全一样，只是拆成 `add` 和查询两个方法（LeetCode 703 是它的简化版）：
+
+```python
+class StreamTopK:
+    def __init__(self, k):
+        self.k = k
+        self.heap = []
+
+    def add(self, x):                          # 每条 O(log k)
+        if len(self.heap) < self.k:
+            heapq.heappush(self.heap, x)
+        elif x > self.heap[0]:
+            heapq.heapreplace(self.heap, x)
+
+    def kth_largest(self):                     # 第 k 大就是门槛，O(1)；调用前要已有 k 个元素
+        return self.heap[0]
+
+    def top(self):                             # 有序的 top-k，O(k log k)
+        return sorted(self.heap, reverse=True)
+```
+
+### 变体 2：带权重（按分数）的 Top-K
+
+ML 场景里的元素通常带一个分数：召回出的 item 有模型打分，商品有点击次数，词有词频。做法是把 `(score, ...)` 元组放进堆，元组按第一项比较。
+
+```python
+def top_k_by_score(items, k):
+    """items: 可迭代的 (item, score)；返回分数最高的 k 个 (item, score)"""
+    heap = []
+    for i, (item, score) in enumerate(items):
+        entry = (score, i, item)               # 中间放序号 i，平局时比 i，永远比不到 item
+        if len(heap) < k:
+            heapq.heappush(heap, entry)
+        elif score > heap[0][0]:
+            heapq.heapreplace(heap, entry)
+    return [(item, score) for score, _, item in sorted(heap, reverse=True)]
+```
+
+为什么要塞一个序号 `i`：元组比较时，第一项相同会接着比第二项。如果第二项是 dict 这种不支持 `<` 的对象，`heapq` 会直接抛 `TypeError`。中间放一个唯一的序号，平局时比序号就分出了大小。
+
+高频元素 Top-K（LeetCode 347）就是先计数、再按次数取 top-k：
+
+```python
+from collections import Counter
+
+
+def top_k_frequent(words, k):
+    counts = Counter(words)                     # O(n) 计数
+    return top_k_by_score(counts.items(), k)    # O(m log k)，m 是不同元素的个数
+```
+
+### Example
+
+```python
+print(top_k([5, 1, 9, 3, 7, 2, 8], k=3))                # [9, 8, 7]
+
+stream = StreamTopK(k=2)
+for x in [4, 1, 7, 3, 9]:
+    stream.add(x)
+print(stream.top(), stream.kth_largest())               # [9, 7] 7
+
+print(top_k_frequent(["a", "b", "a", "c", "b", "a"], k=2))   # [('a', 3), ('b', 2)]
+```
+
+### 关键追问
+
+- **为什么不用全排序？** 时间 $O(n\log n)$ 比 $O(n\log k)$ 多；更重要的是全排序要把 $n$ 个元素全放进内存，没法处理数据流，堆只要 $O(k)$。
+- **找最小的 $k$ 个怎么办？** Python 的 `heapq` 只有最小堆。把元素取负再存进去，就变成了最大堆，门槛变成当前 $k$ 个里最大的那个。
+- **数据分在多台机器上怎么办？** 每台机器先算本地 top-k，再把这些结果合并，求一次 top-k。这样做是对的：全局 top-k 里的任何一个元素，在它所在的机器上一定也排进了本地前 $k$。网络传输量只有「机器数 × $k$」。
+- **数据随机顺序到来时，堆真的要调整 $n$ 次吗？** 不用。第 $i$ 个元素进入当前 top-k 的概率是 $k/i$，总替换次数的期望约为 $k\ln(n/k)$。绝大多数元素和门槛比一次（$O(1)$）就被丢掉了。
+- **数据全在内存里，能更快吗？** 能。快速选择平均 $O(n)$，NumPy 的 `np.argpartition` 就是这么做的（6.4 节和第 9 节 KNN 都用了它）。
+- **`heapreplace` 和 `heappushpop` 有什么区别？** `heapreplace` 先弹再压，新元素一定进堆，所以前面要先判断 `x > heap[0]`。`heappushpop` 先压再弹，新元素如果不比堆顶大会被直接弹回来，可以省掉判断：堆满后每条只写 `heapq.heappushpop(heap, x)`。
+
+---
+
+## 13. 蓄水池抽样（Reservoir Sampling）
+
+### 问题
+
+数据流一条条到来，总长度 $n$ 事先**不知道**（可能大到存不下），只能遍历一次，只有 $O(k)$ 内存。要求最后留下 $k$ 个元素，并且**每个元素被留下的概率都是 $k/n$**。
+
+推荐和广告组爱考它，因为日志天然就是这样的流。比如从一天的全量曝光日志里均匀抽 1 万条做人工标注：日志有多少条，要等当天结束才知道。
+
+### 算法与直觉
+
+想象一个容量为 $k$ 的水池：
+
+1. 前 $k$ 个元素直接放进水池。
+2. 第 $i$ 个元素（$i>k$）到来时，以 $k/i$ 的概率让它进池；如果进池，就从池里**等概率**挑一个踢出去。
+
+直觉：越往后的元素，进池概率 $k/i$ 越小；越早进池的元素，要熬过的被踢轮次越多。这两个效应恰好抵消，所有元素最终的概率相同。
+
+实现时用一个随机数同时决定「进不进」和「踢谁」：在 $[1,i]$ 里均匀随机挑一个 $j$，如果 $j\le k$，就用新元素替换第 $j$ 个位置。$j\le k$ 的概率正好是 $k/i$，而且 $j$ 在 $1..k$ 上是等概率的。
+
+### 实现
+
+```python
+import random
+
+
+def reservoir_sample(stream, k):
+    reservoir = []
+    for i, x in enumerate(stream, start=1):     # i 从 1 开始：x 是第 i 个元素
+        if i <= k:
+            reservoir.append(x)                 # 1. 前 k 个直接进池
+        else:
+            j = random.randint(1, i)            # 2. 在 [1, i] 里等概率挑一个（两端都包含）
+            if j <= k:                          # 3. 概率 k/i 进池
+                reservoir[j - 1] = x            #    同时踢掉第 j 个：池里每个位置被踢的概率相同
+    return reservoir                            # 流比 k 短时，返回全部元素
+```
+
+$k=1$ 是最常见的特例（LeetCode 382、398）：第 $i$ 个元素以 $1/i$ 的概率替换当前选中的元素。
+
+```python
+def reservoir_sample_one(stream):
+    chosen = None
+    for i, x in enumerate(stream, start=1):
+        if random.randint(1, i) == 1:           # 概率 1/i 换成当前元素
+            chosen = x
+    return chosen
+```
+
+### 证明（数学归纳法）
+
+很多人代码能写，证明讲不清。下面这个归纳证明要能完整讲出来。
+
+**命题**：处理完前 $i$ 个元素后（$i\ge k$），这 $i$ 个元素中的每一个在池里的概率都是 $k/i$。
+
+**基础**：$i=k$ 时，前 $k$ 个元素全在池里，概率为 $1=k/k$。
+
+**归纳**：假设处理完前 $i$ 个元素时命题成立，现在来了第 $i+1$ 个。
+
+- **新元素**：按算法，进池概率就是 $\dfrac{k}{i+1}$。
+- **老元素**（前 $i$ 个中的任意一个）：它最后在池里，需要两件事同时发生。
+  1. 处理完前 $i$ 个时它在池里：概率 $\dfrac{k}{i}$（归纳假设）。
+  2. 这一轮没被踢掉。被踢需要新元素进池（$\dfrac{k}{i+1}$），而且恰好挑中它的位置（$\dfrac1k$），所以被踢的概率是 $\dfrac{k}{i+1}\cdot\dfrac1k=\dfrac{1}{i+1}$，不被踢的概率是 $\dfrac{i}{i+1}$。
+
+  这一轮的随机数和之前的过程无关，两个概率直接相乘：
+
+$$
+\frac{k}{i}\cdot\frac{i}{i+1}=\frac{k}{i+1}
+$$
+
+新老元素的概率都是 $k/(i+1)$，命题对 $i+1$ 也成立。归纳到 $i=n$，每个元素被留下的概率都是 $k/n$。$\blacksquare$
+
+**也可以不用归纳，直接连乘。** 第 $m$ 个元素（$m>k$）进池的概率是 $k/m$；之后第 $t$ 个元素到来时，它不被踢的概率是 $1-\frac1t=\frac{t-1}{t}$。所以
+
+$$
+P(\text{第 }m\text{ 个被留下})=\frac{k}{m}\cdot\frac{m}{m+1}\cdot\frac{m+1}{m+2}\cdots\frac{n-1}{n}=\frac{k}{n}
+$$
+
+中间项全部约掉。前 $k$ 个元素（$m\le k$）进池概率是 1，连乘从 $t=k+1$ 开始，结果同样是 $\frac{k}{k+1}\cdots\frac{n-1}{n}=\frac kn$。
+
+### Example：用模拟验证
+
+```python
+from collections import Counter
+
+random.seed(0)
+n, k, trials = 10, 3, 100_000
+counts = Counter()
+for _ in range(trials):
+    counts.update(reservoir_sample(range(n), k))
+
+print({x: round(counts[x] / trials, 3) for x in range(n)})   # 每个值都接近 k/n = 0.3
+```
+
+写完算法后跑一遍这样的模拟，是发现差一错误（off-by-one）最快的办法。
+
+### 变体：带权重的蓄水池抽样
+
+每个元素带一个权重 $w>0$，希望权重越大越容易被抽中。Efraimidis 和 Spirakis（2006）的 A-Res 算法：给每个元素算一个随机 key：
+
+$$
+\text{key}=u^{1/w},\qquad u\sim\text{Uniform}(0,1)
+$$
+
+然后留下 key 最大的 $k$ 个。这一步正好是上一节的数据流 Top-K。
+
+```python
+import heapq
+
+
+def weighted_reservoir_sample(stream, k):
+    """stream 产出 (item, weight)，weight > 0"""
+    heap = []                                   # 最小堆，存 (key, item)；堆顶是门槛
+    for item, w in stream:
+        key = random.random() ** (1.0 / w)      # u^(1/w)：权重越大，key 越接近 1
+        if len(heap) < k:
+            heapq.heappush(heap, (key, item))
+        elif key > heap[0][0]:
+            heapq.heapreplace(heap, (key, item))
+    return [item for _, item in heap]
+```
+
+$k=1$ 时，每个元素被选中的概率恰好是 $w_i/\sum_j w_j$。$k>1$ 时，结果等价于按权重**不放回**地依次抽 $k$ 次。
+
+### 关键追问
+
+- **为什么不先数出 $n$ 再随机抽？** 流的长度事先未知，数据也可能大到存不下。蓄水池只要遍历一次、$O(k)$ 内存。如果数据已经在内存里、$n$ 已知，直接 `random.sample(data, k)` 就行。
+- **复杂度？** 时间 $O(n)$，每个元素一个随机数；空间 $O(k)$。$n$ 远大于 $k$ 时，绝大多数随机数都没用上。Li（1994）的 Algorithm L 用几何分布直接算出下一次替换要跳过多少个元素，复杂度降到 $O\big(k(1+\log(n/k))\big)$。
+- **常见写错的地方？** 把 `randint(1, i)` 写成 `randint(1, i - 1)`，或者 0-based、1-based 下标混用，新元素的进池概率就不再是 $k/i$，结果会偏向流的某一段。
+- **数据分在多台机器上怎么办？** 给每个元素分配一个随机 key $u\sim U(0,1)$，每台机器保留 key 最大的 $k$ 个，汇总后再取全局最大的 $k$ 个。所有 key 独立同分布，所以哪 $k$ 个 key 最大是等概率的。这和上一节分布式 Top-K 是同一个套路。
+- **和 Top-K 是什么关系？** 蓄水池抽样可以看成「给每个元素一个随机分数，取分数最高的 $k$ 个」：不带权重时分数是 $u$，带权重时是 $u^{1/w}$。
 
 ---
 
