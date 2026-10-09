@@ -23,5 +23,6 @@
 
 | 章节                             |
 | -------------------------------- |
-| [12. ML Coding](12-ml-coding.md) |
+| [11. ML Coding 基础](11-ml-coding-basics.md) |
+| [12. ML Coding 专题](12-ml-coding.md) |
 | [参考资料](references.md)        |

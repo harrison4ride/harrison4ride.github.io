@@ -401,5 +401,6 @@ DeepSeek-R1 报告里两个值得记住的观察：
 | [07. 训练与系统](07-training-and-systems.md) |
 | [08. 对齐与 RLHF](08-alignment-and-rlhf.md)  |
 | [09. 推理与部署](09-inference-and-serving.md) |
-| [12. ML Coding](12-ml-coding.md)             |
+| [11. ML Coding 基础](11-ml-coding-basics.md)             |
+| [12. ML Coding 专题](12-ml-coding.md)             |
 | [参考资料](references.md)                    |
