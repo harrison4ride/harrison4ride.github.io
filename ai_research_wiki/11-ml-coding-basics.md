@@ -54,7 +54,7 @@ def solution(train_data, test_data, k):
 - 兼容 Python 3.8：类型标注用 `typing` 里的 `List`、`Optional`、`Tuple`、`Dict`，不写 `list[int]`、`int | None`。
 - 函数带类型标注和简短 docstring，docstring 写清输入输出的形状，例如 `x: (B, T, C)`。
 - 纯 Python 题用 `solution(...)` 做入口，不 import 任何库。
-- PyTorch 模块按 CodeSignal Learn 课程的写法：`super(ClassName, self).__init__()`；注意力里的线性层叫 `w_q`、`w_k`、`w_v`、`w_o`；mask 用 `masked_fill(mask == 0, -1e9)`，1 表示可见。
+- PyTorch 模块继承 `nn.Module`，构造函数第一行写 `super().__init__()`（CodeSignal Learn 课程里的 `super(ClassName, self).__init__()` 是 Python 2 时代的写法，效果相同）；注意力里的线性层叫 `w_q`、`w_k`、`w_v`、`w_o`；mask 用 `masked_fill(mask == 0, -1e9)`，1 表示可见。
 - 训练循环按 `model.train()`、`optimizer.zero_grad()`、前向、`loss.backward()`、`optimizer.step()` 的顺序写；验证时 `model.eval()` 加 `with torch.no_grad():`，日志用 f-string。
 - 每节有自测：固定随机种子，`assert` 形状和数值，能和库函数对拍就对拍，最后打印 `all tests passed`，放在 `if __name__ == "__main__":` 下。
 
@@ -428,7 +428,7 @@ import torch.nn.functional as F
 
 class MLP(nn.Module):
     def __init__(self, in_dim: int, hidden_dim: int, out_dim: int, num_layers: int = 2):
-        super(MLP, self).__init__()                    # 1. 先调父类构造
+        super().__init__()                             # 1. 先调父类构造：漏写的话，下一行赋值子模块就报 AttributeError
         self.inp = nn.Linear(in_dim, hidden_dim)       # 2. 有参数的层写成属性才会注册
         layers = [nn.Linear(hidden_dim, hidden_dim) for _ in range(num_layers)]
         self.hidden = nn.ModuleList(layers)            # 3. 必须包 ModuleList：普通 list 不注册，优化器看不到，也不报错

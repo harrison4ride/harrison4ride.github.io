@@ -60,7 +60,7 @@ class MultiHeadAttention(nn.Module):
     """self-attention 传 (x, x, x)；cross-attention 传 (decoder 状态, memory, memory)。"""
 
     def __init__(self, d_model: int, num_heads: int):
-        super(MultiHeadAttention, self).__init__()
+        super().__init__()
         assert d_model % num_heads == 0, "d_model 必须能被 num_heads 整除"
         self.d_model = d_model
         self.num_heads = num_heads
@@ -106,7 +106,7 @@ class PositionwiseFeedForward(nn.Module):
     """Linear(C -> d_ff) -> ReLU -> Linear(d_ff -> C)，每个位置独立计算"""
 
     def __init__(self, d_model: int, d_ff: int):
-        super(PositionwiseFeedForward, self).__init__()
+        super().__init__()
         self.fc1 = nn.Linear(d_model, d_ff)
         self.fc2 = nn.Linear(d_ff, d_model)
         self.relu = nn.ReLU()
@@ -120,7 +120,7 @@ class PositionalEncoding(nn.Module):
     """PE[pos, 2i] = sin(pos / 10000^(2i/C))，PE[pos, 2i+1] = cos(同上)，加到 embedding 上再 dropout"""
 
     def __init__(self, d_model: int, max_len: int = 512, dropout: float = 0.1):
-        super(PositionalEncoding, self).__init__()
+        super().__init__()
         self.dropout = nn.Dropout(dropout)
         position = torch.arange(max_len).unsqueeze(1).float()                    # (max_len, 1)
         div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))  # (C/2,)
@@ -138,7 +138,7 @@ class EncoderLayer(nn.Module):
     """self-attention -> FFN，每个子层 Post-LN：LN(x + Dropout(Sublayer(x)))"""
 
     def __init__(self, d_model: int, num_heads: int, d_ff: int, dropout: float = 0.1):
-        super(EncoderLayer, self).__init__()
+        super().__init__()
         self.self_attn = MultiHeadAttention(d_model, num_heads)
         self.ffn = PositionwiseFeedForward(d_model, d_ff)
         self.norm1 = nn.LayerNorm(d_model)
@@ -155,7 +155,7 @@ class DecoderLayer(nn.Module):
     """masked self-attention -> cross-attention -> FFN，每个子层 Post-LN"""
 
     def __init__(self, d_model: int, num_heads: int, d_ff: int, dropout: float = 0.1):
-        super(DecoderLayer, self).__init__()
+        super().__init__()
         self.self_attn = MultiHeadAttention(d_model, num_heads)
         self.cross_attn = MultiHeadAttention(d_model, num_heads)
         self.ffn = PositionwiseFeedForward(d_model, d_ff)
@@ -197,7 +197,7 @@ class Transformer(nn.Module):
     def __init__(self, src_vocab_size: int, tgt_vocab_size: int, d_model: int = 512,
                  num_heads: int = 8, num_layers: int = 6, d_ff: int = 2048,
                  max_len: int = 512, dropout: float = 0.1, pad_id: int = 0):
-        super(Transformer, self).__init__()
+        super().__init__()
         self.d_model = d_model
         self.pad_id = pad_id
         self.src_embed = nn.Embedding(src_vocab_size, d_model)
@@ -530,7 +530,7 @@ class StubSeq2Seq(nn.Module):
     """只为测试解码：随机初始化，接口同第 1 节的 Transformer，mask 参数接收但不用"""
 
     def __init__(self, vocab_size: int = 8, d_model: int = 16):
-        super(StubSeq2Seq, self).__init__()
+        super().__init__()
         self.embed = nn.Embedding(vocab_size, d_model)
         self.fc_out = nn.Linear(d_model, vocab_size)
 
@@ -1457,7 +1457,7 @@ $-\log p_t$ 就是逐元素的 BCE，所以复用 `bce_with_logits`，再用 $p_
 ```python
 class BinaryFocalLoss(nn.Module):
     def __init__(self, alpha: Optional[float] = 0.25, gamma: float = 2.0, reduction: str = "mean"):
-        super(BinaryFocalLoss, self).__init__()
+        super().__init__()
         self.alpha = alpha          # 正样本权重，None 表示不加
         self.gamma = gamma          # 聚焦参数，0 时退化成 BCE
         self.reduction = reduction
@@ -1683,7 +1683,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 class MLP(nn.Module):
     def __init__(self, in_dim: int, hidden_dim: int, num_classes: int, dropout: float = 0.1):
-        super(MLP, self).__init__()
+        super().__init__()
         self.net = nn.Sequential(
             nn.Linear(in_dim, hidden_dim), nn.ReLU(), nn.Dropout(dropout),
             nn.Linear(hidden_dim, hidden_dim), nn.ReLU(), nn.Dropout(dropout),
@@ -2189,7 +2189,7 @@ class LSTM(nn.Module):
     """单层单向 LSTM，batch_first=True。参数布局和 nn.LSTM 一致，门的顺序 i, f, g, o"""
 
     def __init__(self, input_size: int, hidden_size: int):
-        super(LSTM, self).__init__()
+        super().__init__()
         self.hidden_size = hidden_size
         self.x2h = nn.Linear(input_size, 4 * hidden_size)     # 对应 weight_ih_l0 (4H, D)、bias_ih_l0
         self.h2h = nn.Linear(hidden_size, 4 * hidden_size)    # 对应 weight_hh_l0 (4H, H)、bias_hh_l0
