@@ -18,6 +18,8 @@
 
 `src (B, T_src)` → Encoder → `memory (B, T_src, C)`；`tgt (B, T_tgt)` + `memory` → Decoder → `logits (B, T_tgt, V)`
 
+`d_model` 是每个 token 向量的长度。输入只是 token id，embedding 把每个 token 变成 `d_model` 维的向量，之后每一层的输入输出都保持这个宽度，所以叫「模型的维度」。它是自己选的超参数，不由数据决定，原论文取 512。同一个数在 `nn.MultiheadAttention` 里叫 `embed_dim`，在 HuggingFace 配置里叫 `hidden_size`。
+
 $$
 \operatorname{Attention}(Q,K,V)=\operatorname{softmax}\!\left(\frac{QK^\top}{\sqrt{d_k}}+M\right)V
 $$
