@@ -75,12 +75,12 @@ class MultiHeadAttention(nn.Module):
     def split_heads(self, x: torch.Tensor) -> torch.Tensor:
         """(B, T, C) -> (B, H, T, d_k)"""
         batch_size, seq_len, _ = x.size()
-        return x.view(batch_size, seq_len, self.num_heads, self.d_k).transpose(1, 2)
+        return x.reshape(batch_size, seq_len, self.num_heads, self.d_k).transpose(1, 2)
 
     def combine_heads(self, x: torch.Tensor) -> torch.Tensor:
-        """(B, H, T, d_k) -> (B, T, C)；transpose 后内存不连续，先 contiguous 再 view"""
+        """(B, H, T, d_k) -> (B, T, C)；transpose 后内存不连续，reshape 会自动复制（view 必须先 .contiguous()）"""
         batch_size, _, seq_len, _ = x.size()
-        return x.transpose(1, 2).contiguous().view(batch_size, seq_len, self.d_model)
+        return x.transpose(1, 2).reshape(batch_size, seq_len, self.d_model)
 
     def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor,
                 mask: Optional[torch.Tensor] = None) -> torch.Tensor:

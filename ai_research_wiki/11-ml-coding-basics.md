@@ -379,11 +379,11 @@ print(x32.dtype, x32.device, b.long().dtype)  # torch.float32 cpu torch.int64，
 ### 形状操作
 
 ```python
-x = torch.arange(6).view(2, 3)                # (2, 3)，view 要求内存连续
-print(x.t().is_contiguous(), x.t().reshape(6))    # False tensor([0, 3, 1, 4, 2, 5])，转置后 view(6) 会报错，用 reshape
+x = torch.arange(6).reshape(2, 3)             # (2, 3)，一律用 reshape：内存不连续时它自动复制
+print(x.t().is_contiguous(), x.t().reshape(6))    # False tensor([0, 3, 1, 4, 2, 5])，这里写 view(6) 会报错：view 只认连续内存
 B, T, H, D_h = 2, 5, 4, 8
-q = torch.randn(B, T, H * D_h).view(B, T, H, D_h).transpose(1, 2)   # (B, H, T, D_h)：拆多头
-merged = q.transpose(1, 2).contiguous().view(B, T, H * D_h)        # (B, T, C)：拼回多头，先 contiguous 再 view
+q = torch.randn(B, T, H * D_h).reshape(B, T, H, D_h).transpose(1, 2)   # (B, H, T, D_h)：拆多头
+merged = q.transpose(1, 2).reshape(B, T, H * D_h)                      # (B, T, C)：拼回多头；写 view 的话要先 .contiguous()
 print(q.permute(0, 2, 1, 3).shape, merged.shape)   # torch.Size([2, 5, 4, 8]) torch.Size([2, 5, 32])
 print(x[0].unsqueeze(0).shape, x[0].unsqueeze(1).shape)   # torch.Size([1, 3]) torch.Size([3, 1])
 print(torch.zeros(1, 3, 1).squeeze(-1).shape) # torch.Size([1, 3])，squeeze 总带 dim，免得 batch=1 也被挤掉
