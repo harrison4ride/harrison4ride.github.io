@@ -951,104 +951,13 @@ if __name__ == "__main__":
 
 - **为什么不用 MSE？** sigmoid 加 MSE 对 $w$ 非凸，而且梯度里多一个 $p(1-p)$，预测错得很离谱时 $p$ 饱和，梯度反而接近 0；BCE 加线性 logits 是凸的，梯度就是 $p-y$。
 - **数据线性可分会怎样？** 不加正则时把 $\|w\|$ 放大总能让 loss 继续下降，权重发散到无穷；加 L2 或早停。
-- **阈值一定是 0.5 吗？** 不一定，由误报和漏报的业务成本决定，按 precision、recall 选（8.1 节）。
-- **多分类怎么办？** 换成 softmax 加交叉熵（第 9 节），梯度形式同样是 $P-Y$；或者训练 K 个一对多（one-vs-rest）的二分类器。
+- **阈值一定是 0.5 吗？** 不一定，由误报和漏报的业务成本决定，按 precision、recall 选（6.1 节）。
+- **多分类怎么办？** 换成 softmax 加交叉熵（第 7 节），梯度形式同样是 $P-Y$；或者训练 K 个一对多（one-vs-rest）的二分类器。
 - **输出的概率能直接用吗？** 用 BCE 训练的 LR 本身校准得比较好；加了强正则或者类别重采样后，概率会偏，需要重新校准。
 
 ---
 
-## 5. 线性回归与多项式回归
-
-多元线性回归 $\hat y=Xw+b$ 有闭式解，不用迭代。$X$ 左边拼一列 1，截距变成 $\theta_0$，对均方误差求导令其为 0：
-
-$$
-\theta=(X^\top X)^{-1}X^\top y
-$$
-
-**代码里不写 `inv(X.T @ X)`。** 显式求逆最不稳，而且 $X^\top X$ 的条件数是 $X$ 的平方，特征一共线就会炸。`np.linalg.lstsq` 直接对 $X$ 做 SVD 求最小二乘，不构造 $X^\top X$，秩亏时还能给出最小范数解。面试时先写公式证明会推导，再说实现调 `lstsq`。
-
-**Ridge** 的闭式解是 $\theta=(X^\top X+\alpha I)^{-1}X^\top y$。对角线加上 $\alpha I$ 把最小特征值至少抬到 $\alpha$，原本奇异的矩阵也可逆，所以能处理共线性；实现时用 `np.linalg.solve` 解方程，不求逆。
-
-**多项式回归**就是特征扩展加线性回归：把 $x$ 展开成 $[x,x^2,\dots,x^p]$ 当新特征，套同一个求解器。注意区分「多元」（多个特征）和「多项式」（高次项）。
-
-### 实现
-
-```python
-from typing import Optional
-
-import numpy as np
-
-
-def add_intercept(X: np.ndarray) -> np.ndarray:
-    """X: (n, d) -> (n, d + 1)，最左边拼一列 1，截距变成 theta[0]"""
-    return np.hstack([np.ones((X.shape[0], 1)), X])
-
-
-def polynomial_features(x: np.ndarray, degree: int) -> np.ndarray:
-    """x: (n,) -> (n, degree)，列依次是 x, x^2, ..., x^degree；截距由模型加"""
-    return np.column_stack([x ** p for p in range(1, degree + 1)])
-
-
-class LinearRegression:
-    def __init__(self, alpha: float = 0.0):
-        self.alpha = alpha                                  # 0 是普通最小二乘，> 0 是 Ridge
-        self.theta: Optional[np.ndarray] = None             # (d + 1,)，theta[0] 是截距
-
-    def fit(self, X: np.ndarray, y: np.ndarray) -> "LinearRegression":
-        """X: (n, d)，y: (n,)"""
-        Xb = add_intercept(np.asarray(X, dtype=float))      # (n, d + 1)
-        y = np.asarray(y, dtype=float)
-        if self.alpha == 0:
-            # 1. lstsq 返回 (解, 残差平方和, 秩, 奇异值)，只要解
-            self.theta = np.linalg.lstsq(Xb, y, rcond=None)[0]
-        else:
-            # 2. Ridge：解 (X^T X + αI) θ = X^T y，截距不正则
-            reg = self.alpha * np.eye(Xb.shape[1])
-            reg[0, 0] = 0.0
-            self.theta = np.linalg.solve(Xb.T @ Xb + reg, Xb.T @ y)
-        return self
-
-    def predict(self, X: np.ndarray) -> np.ndarray:
-        """X: (m, d)。返回 (m,)"""
-        return add_intercept(np.asarray(X, dtype=float)) @ self.theta
-```
-
-### 自测
-
-```python
-from sklearn.linear_model import LinearRegression as SkLinearRegression, Ridge
-
-
-def test_linear_regression() -> None:
-    rng = np.random.default_rng(0)
-    X = rng.normal(size=(50, 3))                                               # (50, 3)
-    y = X @ np.array([2.0, -1.0, 0.5]) + 3.0 + 0.1 * rng.normal(size=50)       # (50,)
-    pairs = [(LinearRegression(), SkLinearRegression()), (LinearRegression(alpha=5.0), Ridge(alpha=5.0))]
-    for ours, ref in pairs:                                                    # 1. OLS 和 Ridge 都和 sklearn 对拍
-        ref.fit(X, y)
-        assert np.allclose(ours.fit(X, y).theta, np.r_[ref.intercept_, ref.coef_])
-    x = np.linspace(-2, 2, 20)                                                 # 2. 多项式：精确恢复 1 + 2x - 3x^2
-    theta = LinearRegression().fit(polynomial_features(x, 2), 1 + 2 * x - 3 * x ** 2).theta
-    assert np.allclose(theta, [1.0, 2.0, -3.0])
-    x1 = np.arange(1.0, 6.0)                       # 3. 完全共线：第二列 = 第一列 + 1，加上截距列秩只有 2
-    X_col = np.column_stack([x1, x1 + 1])          # inv(X^T X) 在这里报 LinAlgError，lstsq 照样拟合
-    assert np.allclose(LinearRegression().fit(X_col, 2 * x1 + 3).predict(X_col), 2 * x1 + 3)
-    print("all tests passed")
-
-
-if __name__ == "__main__":
-    test_linear_regression()
-```
-
-### 关键追问
-
-- **什么时候不用闭式解？** 闭式解要 $O(nd^2+d^3)$；特征维度 $d$ 很大，或者数据放不进内存时，改用（小批量）梯度下降。
-- **Ridge 和 Lasso 的区别？** L2 把所有权重往 0 收缩，有闭式解；L1 会把一部分权重压成正好 0，相当于特征选择，没有闭式解，用坐标下降求。
-- **多项式回归的坑？** degree 高了会剧烈震荡去穿过每个训练点，严重过拟合，用 Ridge 压高次项、用验证集选 degree；多个特征展开时交叉项数量爆炸；$x^p$ 的量级差别很大，先标准化。
-
----
-
-## 6. 决策树：信息熵与信息增益
+## 5. 决策树：信息熵与信息增益
 
 - **熵** $H(y)=-\sum_c p_c\log_2 p_c$：全是同一类时为 0，各类均匀时最大。
 - **信息增益** $IG=H(\text{父})-\sum_{\text{子}}\frac{n_{\text{子}}}{n}H(\text{子})$：切分前的熵减去切分后子集熵的加权平均。每一步选 IG 最大（切完最纯）的特征和阈值。
@@ -1091,35 +1000,7 @@ if __name__ == "__main__":
 
 ---
 
-## 7. SVM
-
-面试很少让手写 SMO，重点讲清几何直觉，代码直接调库：
-
-- **最大间隔**：能分开两类的超平面有无数条，SVM 选离最近点（支持向量）最远的那条，泛化更好。只有支持向量决定边界。
-- **软间隔与 C**：等价于 hinge loss $\max(0,1-y\,f(x))$ 加 L2 正则。`C` 越大越不容忍误分类，间隔越窄，越容易过拟合。
-- **核技巧**：线性不可分时用核函数（如 RBF）隐式映射到高维再切，不用显式算高维坐标。RBF 的 `gamma` 越大，边界越弯。
-- **要先标准化**：间隔由距离定义，和 KNN 一样受特征尺度影响。
-
-```python
-from sklearn.datasets import make_circles
-from sklearn.model_selection import train_test_split
-from sklearn.pipeline import make_pipeline
-from sklearn.preprocessing import StandardScaler
-from sklearn.svm import SVC
-
-# 同心圆：一类被另一类包围，线性不可分
-X, y = make_circles(n_samples=300, factor=0.4, noise=0.1, random_state=0)   # (300, 2)
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=0)
-for kernel in ("linear", "rbf"):
-    clf = make_pipeline(StandardScaler(), SVC(kernel=kernel, C=1.0)).fit(X_train, y_train)
-    print(kernel, round(clf.score(X_test, y_test), 3), len(clf[-1].support_))   # 测试准确率、支持向量个数
-# linear 0.411 198：一条直线切不开同心圆
-# rbf 1.0 35：映射到高维后完全分开，边界只由 35 个支持向量决定
-```
-
----
-
-## 8. Cosine Similarity
+## 6. Cosine Similarity
 
 $$
 \cos(a,b)=\frac{a\cdot b}{\|a\|\,\|b\|}
@@ -1166,7 +1047,7 @@ if __name__ == "__main__":
 
 ---
 
-## 8.1 分类指标：Precision、Recall、F1 与 AUC
+## 6.1 分类指标：Precision、Recall、F1 与 AUC
 
 ### Precision、Recall、F1
 
@@ -1318,7 +1199,7 @@ if __name__ == "__main__":
 
 ---
 
-## 9. Softmax、交叉熵与常见 Loss
+## 7. Softmax、交叉熵与常见 Loss
 
 Softmax 把 logits 变成和为 1 的概率分布。实现时分子分母同乘 $e^{-\max_j z_j}$，数学上等价，但最大项变成 $e^0=1$，不会上溢：
 
@@ -1360,7 +1241,7 @@ print(softmax(z).round(4).tolist())                  # [[1.0, 0.0], [0.2689, 0.7
 print(f"{cross_entropy_from_logits(z, np.array([1, 1])):.4f}")   # 500.1566：p 下溢成 0 也不会得到 inf
 ```
 
-带 batch 时必须写 `axis=-1, keepdims=True`：省掉 axis 的 `np.max(x)`、`e.sum()` 会对整个矩阵取最大、求和，每行不再各自归一化。合并后对 logits 的梯度是 $(p-\text{onehot})/N$，推导见第 11 节。手上只有概率时，先 `np.clip(p, 1e-15, 1)` 再取 log。
+带 batch 时必须写 `axis=-1, keepdims=True`：省掉 axis 的 `np.max(x)`、`e.sum()` 会对整个矩阵取最大、求和，每行不再各自归一化。合并后对 logits 的梯度是 $(p-\text{onehot})/N$。手上只有概率时，先 `np.clip(p, 1e-15, 1)` 再取 log。
 
 ### PyTorch 实现
 
@@ -1533,134 +1414,16 @@ if __name__ == "__main__":
 ### 关键追问
 
 - **为什么 loss 吃 logits，不吃概率？** 先 softmax 再 log，概率下溢成 0 时 loss 是 `inf`、梯度是 `nan`，logsumexp 和 softplus 不会。模型最后接了 `nn.Softmax` 再喂给 `F.cross_entropy` 等于做两次 softmax：不报错，但 loss 降不到 0，梯度也被压扁。
-- **有 ignore_index 时 mean 除以什么？** 除以有效位置数。梯度累积（10.1 节）时各 micro-batch 的有效 token 数不同，各自取 mean 再平均有偏，严格写法是用 `reduction="sum"`，最后除以总有效 token 数。
+- **有 ignore_index 时 mean 除以什么？** 除以有效位置数。梯度累积（8 节）时各 micro-batch 的有效 token 数不同，各自取 mean 再平均有偏，严格写法是用 `reduction="sum"`，最后除以总有效 token 数。
 - **类别不均衡怎么处理？** 多分类给 `F.cross_entropy` 传 `weight`（形状 `(C,)`），二分类用 `pos_weight`，简单负样本特别多（欺诈、CTR）时用 focal loss。focal loss 默认 γ = 2、α = 0.25，α 小于 0.5 是因为大量简单负样本已经被 γ 压掉了。
 - **Label smoothing 的直觉？** one-hot 目标要求真实类别概率等于 1，logits 只能无限拉大，模型越来越过度自信；软目标的最优 logits 有限，校准和泛化通常更好。副作用是 loss 降不到 0；也有定义把 ε 分给其余 $C-1$ 类，面试时先问清楚。
 - **蒸馏为什么乘 T²？** 不乘时梯度约按 $1/T^2$ 缩小：链式法则从 $z/T$ 带出一个 $1/T$，两个分布变平后 $p^{s}-p^{t}$ 又约正比于 $1/T$。乘 $T^2$ 后梯度量级基本不随 $T$ 变，改 $T$ 时不用重调和 CE 的权重 α。
 
 ---
 
-## 10. 优化器：SGD、Momentum、Adam
+## 8. PyTorch Training-Validation Loop
 
-训练就是下山：梯度 $g_t=\nabla_\theta\mathcal L$ 指向上坡最陡的方向，每步往反方向走一小步，SGD 写成 $\theta_{t+1}=\theta_t-\eta\,g_t$。S（Stochastic）指 $g_t$ 只用一个 mini-batch 算，是全量梯度的带噪声估计。
-
-Momentum 给参数加上惯性。速度 $v$ 展开后是 $g_t+\beta g_{t-1}+\beta^2 g_{t-2}+\cdots$，即过去梯度的指数加权和，$\beta$ 通常取 0.9：
-
-$$
-v_{t+1}=\beta\,v_t+g_t,\qquad
-\theta_{t+1}=\theta_t-\eta\,v_{t+1}
-$$
-
-Adam 等于 Momentum（一阶矩 $m$，管方向）加 RMSProp（二阶矩 $v$ 是梯度平方的滑动平均，给每个参数单独定步长），再加偏差修正。这里的 $v$ 和 Momentum 的速度含义不同：
-
-$$
-m_t=\beta_1 m_{t-1}+(1-\beta_1)\,g_t,\qquad
-v_t=\beta_2 v_{t-1}+(1-\beta_2)\,g_t^2
-$$
-
-$$
-\hat m_t=\frac{m_t}{1-\beta_1^t},\qquad
-\hat v_t=\frac{v_t}{1-\beta_2^t},\qquad
-\theta_t=\theta_{t-1}-\eta\,\frac{\hat m_t}{\sqrt{\hat v_t}+\epsilon}
-$$
-
-**为什么 Momentum 能加速？** 在又窄又长的山谷里（各方向曲率差很多），横跨山谷的梯度每步换号，SGD 在两侧来回弹；沿谷底的梯度小但方向一致，SGD 走得慢。加权求和让换号的分量互相抵消、一致的分量累加，梯度恒为 $g$ 时 $v\to g/(1-\beta)$，有效步长放大到 $\eta/(1-\beta)$，$\beta=0.9$ 时是 10 倍。在 $f(x,y)=\tfrac12(x^2+100y^2)$ 上从 $(10,1)$ 出发、$\eta=0.018$，GD 要 508 步才离最低点不到 $10^{-3}$，加上 $\beta=0.9$ 的 Momentum 只要 138 步。
-
-**什么时候会震荡？** 在 $f(x)=\tfrac12\lambda x^2$ 上 GD 是 $x_{t+1}=(1-\eta\lambda)x_t$：$\eta\lambda$ 在 1 到 2 之间每步换号来回跳，超过 2 发散，所以学习率上限 $2/\lambda_{\max}$ 由最陡方向决定。另外两种：$\beta$ 太大时惯性太强，冲过最低点来回摆；mini-batch 噪声让参数在最低点附近抖，靠学习率衰减或加大 batch 解决。
-
-### 实现
-
-仿 PyTorch 接口：构造时传入参数数组的列表，`step(grads)` 原地更新。
-
-```python
-from typing import List, Tuple
-
-import numpy as np
-
-
-class SGD:
-    def __init__(self, params: List[np.ndarray], lr: float = 0.01, momentum: float = 0.0,
-                 weight_decay: float = 0.0):
-        """params: 参数数组的列表（形状任意），step 里原地修改"""
-        self.params = params
-        self.lr = lr
-        self.momentum = momentum
-        self.weight_decay = weight_decay
-        self.velocities = [np.zeros_like(p) for p in params]   # 每个参数一个速度，形状相同
-
-    def step(self, grads: List[np.ndarray]) -> None:
-        """grads: 和 params 一一对应，形状相同"""
-        for p, g, v in zip(self.params, grads, self.velocities):
-            if self.weight_decay > 0:
-                g = g + self.weight_decay * p   # 1. L2 正则的梯度是 λw（新数组，不改调用方的 grad）
-            if self.momentum > 0:
-                v *= self.momentum              # 2. 衰减旧速度，原地改 self.velocities 才记得住
-                v += g                          #    再加上当前梯度
-                g = v
-            p -= self.lr * g                    # 3. 原地更新：模型持有的是同一个数组
-
-
-class Adam:
-    def __init__(self, params: List[np.ndarray], lr: float = 1e-3,
-                 betas: Tuple[float, float] = (0.9, 0.999), eps: float = 1e-8):
-        self.params = params
-        self.lr = lr
-        self.beta1, self.beta2 = betas
-        self.eps = eps
-        self.m = [np.zeros_like(p) for p in params]   # 一阶矩：管方向
-        self.v = [np.zeros_like(p) for p in params]   # 二阶矩：管每个参数的步长
-        self.t = 0                                    # 步数，偏差修正要用
-
-    def step(self, grads: List[np.ndarray]) -> None:
-        self.t += 1
-        for p, g, m, v in zip(self.params, grads, self.m, self.v):
-            m *= self.beta1                           # 1. m = β1·m + (1-β1)·g，原地
-            m += (1 - self.beta1) * g
-            v *= self.beta2                           # 2. v = β2·v + (1-β2)·g²，原地
-            v += (1 - self.beta2) * g * g
-            m_hat = m / (1 - self.beta1 ** self.t)    # 3. 偏差修正：m、v 从 0 起步，前几步偏小
-            v_hat = v / (1 - self.beta2 ** self.t)
-            p -= self.lr * m_hat / (np.sqrt(v_hat) + self.eps)   # 4. 原地更新
-```
-
-### 自测
-
-和 `torch.optim.SGD`、`torch.optim.Adam` 对拍：同样的初值、同样的 5 步梯度，参数应该一致。
-
-```python
-import numpy as np
-import torch
-
-if __name__ == "__main__":
-    rng = np.random.default_rng(0)
-    cases = [(SGD, torch.optim.SGD, {"lr": 0.1, "momentum": 0.9, "weight_decay": 0.01}),
-             (Adam, torch.optim.Adam, {"lr": 0.1})]
-    for ours_cls, torch_cls, kwargs in cases:
-        w = rng.standard_normal((3, 4))                # 模型持有的参数数组
-        w_t = torch.tensor(w, requires_grad=True)      # torch.tensor 会拷贝，两边互不影响
-        opt, opt_t = ours_cls([w], **kwargs), torch_cls([w_t], **kwargs)
-        for _ in range(5):
-            g = rng.standard_normal((3, 4))
-            opt.step([g])                              # 原地改 w
-            w_t.grad = torch.tensor(g)
-            opt_t.step()
-        assert np.allclose(w, w_t.detach().numpy())
-    print("all tests passed")
-```
-
-### 关键追问
-
-- **为什么 `v *= momentum` 和 `p -= ...` 必须原地写？** 写成 `v = momentum * v + g` 会新建数组，`self.velocities` 里存的永远是 0，Momentum 悄悄退化成 SGD 而且不报错。`p` 同理，不原地改，模型持有的那个数组根本没变。
-- **偏差修正修的是什么？** $m$、$v$ 从 0 起步，前几步被拉向 0：第一步 $m_1=0.1\,g_1$，除以 $1-\beta_1=0.1$ 正好还原成 $g_1$。不修正时第一步的更新量约是修正后的 3.16 倍（$0.1/\sqrt{0.001}$）。
-- **SGD 和 Adam 怎么选？** Adam 给每个参数自适应步长，对学习率不太敏感、收敛快，Transformer 和 LLM 基本都用 AdamW。SGD + Momentum 有时泛化更好，而且省显存：Adam 每个参数多存 $m$、$v$ 两份状态，Momentum 只多存一份速度。
-- **Nesterov 有什么不同？** 先按惯性往前看一步，在预估的位置算梯度，冲过头时能更早刹车；PyTorch 的写法把更新量从 $v$ 换成 $g+\beta v$，不用多算一次梯度。
-- **AdamW 改了什么？** Adam 把 L2 加进梯度后，正则项也被 $\sqrt{\hat v}$ 除掉，梯度大的参数衰减得少；AdamW 把 weight decay 从梯度里拿出来，单独做一步 `p -= lr * wd * p`。
-
----
-
-## 10.1 PyTorch Training-Validation Loop
-
-每个 epoch 分两半。**训练**：遍历训练集，每个 batch 做五步，清梯度、前向、算 loss、反向、更新。**验证**：在 `model.eval()` 和 `torch.no_grad()` 下只做前向，算 loss 和 accuracy，用来挑模型和 early stopping，所以最终效果要在另一份测试集上报告。五步和第 11 节的 NumPy MLP 一一对应：`loss.backward()` 代替手写的逐层 backward，`optimizer.step()` 代替第 10 节的 `opt.step(grads)`。
+每个 epoch 分两半。**训练**：遍历训练集，每个 batch 做五步，清梯度、前向、算 loss、反向、更新。**验证**：在 `model.eval()` 和 `torch.no_grad()` 下只做前向，算 loss 和 accuracy，用来挑模型和 early stopping，所以最终效果要在另一份测试集上报告。`loss.backward()` 自动计算梯度，`optimizer.step()` 根据梯度更新模型参数。
 
 ### 实现
 
@@ -1806,7 +1569,7 @@ if __name__ == "__main__":
 
 ### 关键追问
 
-- **`model.eval()` 和 `torch.no_grad()` 有什么区别？** `eval()` 改变层的计算：Dropout 不丢神经元，BatchNorm 用 running 统计量（11.1 节）；`no_grad()` 只是不建计算图，省内存和时间，不会关掉 Dropout。验证两个都要写：只写 `no_grad()` 结果每次不一样，只写 `eval()` 结果对但白建了计算图。
+- **`model.eval()` 和 `torch.no_grad()` 有什么区别？** `eval()` 改变层的计算：Dropout 不丢神经元，BatchNorm 用 running 统计量（9 节）；`no_grad()` 只是不建计算图，省内存和时间，不会关掉 Dropout。验证两个都要写：只写 `no_grad()` 结果每次不一样，只写 `eval()` 结果对但白建了计算图。
 - **忘了 `optimizer.zero_grad()` 会怎样？** `.grad` 默认累加，每一步的梯度都混进之前所有 batch 的梯度，越攒越大、方向被带偏，不报错但 loss 不降。放在上一次 `step()` 之后、这一次 `backward()` 之前都行，习惯写在每个 batch 开头。
 - **为什么累加 `loss.item() * xb.size(0)`？** 直接累加 `loss` 张量会把每个 batch 的计算图都留在内存里（基础篇 0.3 节）。乘样本数是因为最后一批更小，对每个 batch 的平均再求平均会给它过大的权重，自测已对拍加权平均等于整个验证集一次算的 loss。
 - **`scheduler.step()` 放在哪？** 放在 `optimizer.step()` 之后，写反了会有 UserWarning，而且第一个学习率被跳过。`StepLR`、`CosineAnnealingLR` 每个 epoch 调一次；`OneCycleLR` 和 warmup 每个 batch 调一次，要放进 batch 循环。
@@ -1814,235 +1577,7 @@ if __name__ == "__main__":
 
 ---
 
-## 11. 手写神经网络层：Linear、ReLU、Softmax、Dropout 与两层 MLP
-
-反向传播就是链式法则。每层只写两个函数：`forward(x)` 算输出，并缓存 backward 要用的东西；`backward(dout)` 收到上游梯度 $\partial\mathcal L/\partial\text{out}$，算出参数梯度，再返回 $\partial\mathcal L/\partial x$ 往前传。
-
-写 backward 最有用的一条规则：**梯度和它对应的变量形状完全相同。** $W$ 是 $(D_{in},D_{out})$，$dW$ 也必须是 $(D_{in},D_{out})$。很多时候把形状凑对就能写出正确的矩阵乘法，面试时边写边把每一步的形状念出来。
-
-### Linear
-
-$$
-Y=XW+b,\qquad dX=dY\,W^\top,\qquad dW=X^\top dY,\qquad db=\sum_{i=1}^{N}dY_{i,:}
-$$
-
-形状：$X:(N,D_{in})$，$W:(D_{in},D_{out})$，$b:(D_{out},)$，$Y$ 和 $dY$ 都是 $(N,D_{out})$。用凑形状检查：$dW$ 要 $(D_{in},D_{out})$，手上只有 $X$ 和 $dY$，唯一能凑出来的是 $X^\top dY$。$b$ 在前向被广播到 $N$ 行，反向就把 $N$ 行的梯度加起来：**前向广播，反向求和。**
-
-```python
-from typing import Callable, List, Optional, Tuple
-
-import numpy as np
-
-
-def linear_forward(x: np.ndarray, W: np.ndarray, b: np.ndarray) -> Tuple[np.ndarray, tuple]:
-    """x: (N, D_in)，W: (D_in, D_out)，b: (D_out,)。返回 out (N, D_out) 和 cache"""
-    out = x @ W + b                  # (N, D_in) @ (D_in, D_out) + (D_out,) -> (N, D_out)
-    return out, (x, W)               # backward 用 x 算 dW，用 W 算 dx
-
-
-def linear_backward(dout: np.ndarray, cache: tuple) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """dout: (N, D_out)。返回 dx (N, D_in)，dW (D_in, D_out)，db (D_out,)"""
-    x, W = cache
-    dx = dout @ W.T                  # (N, D_out) @ (D_out, D_in) -> (N, D_in)
-    dW = x.T @ dout                  # (D_in, N) @ (N, D_out) -> (D_in, D_out)
-    db = dout.sum(axis=0)            # (N, D_out) -> (D_out,)：前向广播，反向求和
-    return dx, dW, db
-```
-
-### ReLU
-
-前向被截成 0 的位置，反向梯度也是 0，其余位置原样传回。
-
-```python
-def relu_forward(x: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    return np.maximum(0, x), x       # 缓存输入：backward 要知道哪些位置 > 0
-
-
-def relu_backward(dout: np.ndarray, x: np.ndarray) -> np.ndarray:
-    return dout * (x > 0)            # (N, D) -> (N, D)
-```
-
-### Softmax 单独的反向
-
-softmax 后面接的不一定是交叉熵（注意力里接的是乘 $V$），这时它是一个独立的层，要对任意上游梯度 $dy$ 算 $dx$。Jacobian 和 vector-Jacobian product：
-
-$$
-\frac{\partial y_i}{\partial x_j}=y_i(\delta_{ij}-y_j),\qquad J=\operatorname{diag}(y)-yy^\top,\qquad dx=y\odot\Big(dy-\sum_i dy_i\,y_i\Big)
-$$
-
-括号里的求和是 $dy$ 和 $y$ 的逐行点积。不要把 $J$ 建出来：一个 batch 的 $J$ 是 $(N,C,C)$，上面的公式只要 $O(NC)$。backward 只用前向输出 $y$，`axis=-1` 加 `keepdims=True` 让注意力的 `(B, H, T, T)` 也能直接用。
-
-```python
-def softmax_forward(x: np.ndarray) -> np.ndarray:
-    """x: (N, C) -> y: (N, C)，每行和为 1"""
-    e = np.exp(x - x.max(axis=-1, keepdims=True))    # 1. (N, C) 减每行最大值，防上溢
-    return e / e.sum(axis=-1, keepdims=True)         # 2. (N, C) / (N, 1)
-
-
-def softmax_backward(dy: np.ndarray, y: np.ndarray) -> np.ndarray:
-    """dy: (N, C) 上游梯度；y: (N, C) 前向输出。返回 dx: (N, C)"""
-    dot = (dy * y).sum(axis=-1, keepdims=True)       # 1. (N, 1) 每行的 Σ dy_i y_i
-    return y * (dy - dot)                            # 2. (N, C)
-```
-
-### Softmax + Cross-Entropy 的反向
-
-两者合在一起时梯度最简单（loss 的数值稳定写法见第 9 节）：
-
-$$
-\frac{\partial\mathcal L}{\partial z}=\frac{1}{N}\big(p-\text{onehot}(y)\big),\qquad p=\operatorname{softmax}(z)
-$$
-
-推导：单个样本 $\mathcal L=-z_y+\log\sum_j e^{z_j}$，对 $z_k$ 求导，第一项只在 $k=y$ 时给 $-1$，第二项正好是 $p_k$；batch 取了平均，再除以 $N$。
-
-```python
-def softmax_cross_entropy(logits: np.ndarray, y: np.ndarray) -> Tuple[float, np.ndarray]:
-    """logits: (N, C) 未经 softmax；y: (N,) 整数标签。返回平均 loss 和 dlogits (N, C)"""
-    n = logits.shape[0]
-    shifted = logits - logits.max(axis=1, keepdims=True)                      # (N, C) 稳定化
-    log_probs = shifted - np.log(np.exp(shifted).sum(axis=1, keepdims=True))  # (N, C) log-softmax
-    loss = float(-log_probs[np.arange(n), y].mean())
-    dlogits = np.exp(log_probs)          # 1. (N, C) 概率 p；exp 生成新数组，可以原地改
-    dlogits[np.arange(n), y] -= 1        # 2. 真实类别那一列减 1：p - onehot
-    return loss, dlogits / n             # 3. loss 对 batch 取了平均，梯度也除以 N
-```
-
-### Dropout（inverted）
-
-先问清 $p$ 的含义：PyTorch 的 `nn.Dropout(p)` 里 $p$ 是**丢弃**概率，本节也用这个约定；原论文和 TF1 的 `keep_prob` 是保留概率。PyTorch 用 inverted dropout，训练时把留下的激活放大 $1/(1-p)$，推理时什么都不做：
-
-$$
-m\sim\operatorname{Bernoulli}(1-p),\qquad \text{out}_{\text{train}}=\frac{m\odot x}{1-p},\qquad \text{out}_{\text{eval}}=x,\qquad dx=dout\odot\frac{m}{1-p}
-$$
-
-放大是为了保持期望：$\operatorname{E}[\text{out}_i]=(1-p)\cdot x_i/(1-p)=x_i$，所以推理时 dropout 就是恒等。backward 必须用前向那一次的 mask，被丢掉的位置梯度为 0。MLP 里放在激活之后：Linear → ReLU → Dropout → Linear。
-
-```python
-def dropout_forward(x: np.ndarray, p: float, training: bool,
-                    rng: np.random.Generator) -> Tuple[np.ndarray, Optional[np.ndarray]]:
-    """x: (N, D)；p: 丢弃概率，0 <= p < 1。返回 out (N, D) 和缩放后的 mask"""
-    if not training or p == 0.0:
-        return x, None                                 # 推理：恒等
-    mask = (rng.random(x.shape) >= p) / (1.0 - p)      # 1. (N, D)，值只有 0 和 1/(1-p)
-    return x * mask, mask                              # 2. 缓存 mask，backward 必须用同一个
-
-
-def dropout_backward(dout: np.ndarray, mask: Optional[np.ndarray]) -> np.ndarray:
-    return dout if mask is None else dout * mask       # 前向乘了什么，反向就乘什么
-```
-
-### 拼起来：两层 MLP + mini-batch SGD
-
-Linear → ReLU → Linear → Softmax CE。前向从左往右，反向从右往左，每层把梯度交给前一层。参数更新就是第 10 节的 Momentum，这里内联三行，让本节单独能跑。
-
-```python
-def init_mlp(d_in: int, hidden: int, num_classes: int, rng: np.random.Generator) -> List[np.ndarray]:
-    """He 初始化（配合 ReLU，方差 2 / fan_in）。返回 [W1, b1, W2, b2]"""
-    return [rng.standard_normal((d_in, hidden)) * np.sqrt(2.0 / d_in), np.zeros(hidden),
-            rng.standard_normal((hidden, num_classes)) * np.sqrt(2.0 / hidden), np.zeros(num_classes)]
-
-
-def mlp_loss_and_grads(params: List[np.ndarray], x: np.ndarray,
-                       y: np.ndarray) -> Tuple[float, List[np.ndarray]]:
-    """x: (B, D)，y: (B,)。返回 loss 和与 params 一一对应的梯度"""
-    W1, b1, W2, b2 = params
-    # 1. 前向：(B, D) -> (B, hidden) -> (B, hidden) -> (B, C)
-    h, cache1 = linear_forward(x, W1, b1)
-    a, relu_cache = relu_forward(h)
-    logits, cache2 = linear_forward(a, W2, b2)
-    loss, dlogits = softmax_cross_entropy(logits, y)
-    # 2. 反向：倒着走一遍
-    da, dW2, db2 = linear_backward(dlogits, cache2)
-    dh = relu_backward(da, relu_cache)
-    _, dW1, db1 = linear_backward(dh, cache1)
-    return loss, [dW1, db1, dW2, db2]
-
-
-def train_mlp(x: np.ndarray, y: np.ndarray, hidden: int = 16, num_classes: int = 2,
-              epochs: int = 100, batch_size: int = 32, lr: float = 0.1,
-              momentum: float = 0.9, seed: int = 0) -> List[np.ndarray]:
-    rng = np.random.default_rng(seed)
-    params = init_mlp(x.shape[1], hidden, num_classes, rng)
-    velocities = [np.zeros_like(p) for p in params]
-    for _ in range(epochs):
-        perm = rng.permutation(len(x))                       # 1. 每个 epoch 打乱一次
-        for start in range(0, len(x), batch_size):
-            idx = perm[start:start + batch_size]             # 2. 取一个 mini-batch
-            _, grads = mlp_loss_and_grads(params, x[idx], y[idx])
-            for p, g, v in zip(params, grads, velocities):   # 3. Momentum，原地更新
-                v[:] = momentum * v + g
-                p -= lr * v
-    return params
-
-
-rng = np.random.default_rng(42)
-X = rng.standard_normal((400, 2))
-y = (X[:, 0] * X[:, 1] > 0).astype(int)      # 一三象限为 1，二四象限为 0：一条直线分不开
-W1, b1, W2, b2 = train_mlp(X, y)
-logits = np.maximum(0, X @ W1 + b1) @ W2 + b2
-print("train accuracy:", (logits.argmax(axis=1) == y).mean())   # train accuracy: 0.9925
-```
-
-### 梯度检查
-
-backward 写完用数值微分验证，中心差分比单边差分准得多：$\partial f/\partial x\approx(f(x+h)-f(x-h))/(2h)$。float64 下相对误差小于 $10^{-7}$ 基本没问题，大于 $10^{-3}$ 几乎一定有 bug。
-
-```python
-def numerical_grad(f: Callable[[], float], x: np.ndarray, h: float = 1e-5) -> np.ndarray:
-    """f: 无参函数，返回标量 loss；x: 参数数组，会被临时扰动再还原"""
-    grad = np.zeros_like(x)
-    for i in range(x.size):
-        old = x.flat[i]
-        x.flat[i] = old + h
-        f_plus = f()
-        x.flat[i] = old - h
-        grad.flat[i] = (f_plus - f()) / (2 * h)
-        x.flat[i] = old                                  # 一定要还原
-    return grad
-
-
-def rel_error(a: np.ndarray, b: np.ndarray) -> float:
-    return float(np.max(np.abs(a - b) / np.maximum(1e-8, np.abs(a) + np.abs(b))))
-```
-
-### 自测
-
-对 MLP 的 `dW1` 做一次梯度检查，就同时验证了 Linear、ReLU、softmax CE 三个 backward。
-
-```python
-def run_layer_tests() -> None:
-    rng = np.random.default_rng(0)
-    x, y = rng.standard_normal((6, 2)), np.array([0, 1, 2, 0, 1, 2])
-    params = init_mlp(2, 5, 3, rng)                      # 1. 梯度检查 MLP 的 dW1
-    num = numerical_grad(lambda: mlp_loss_and_grads(params, x, y)[0], params[0])
-    err = rel_error(mlp_loss_and_grads(params, x, y)[1][0], num)
-    print(f"grad check {err:.1e}")                       # grad check 1.7e-10
-    assert err < 1e-7
-    # 2. 单独的 softmax 反向接上 CE 的上游梯度 -onehot / (N p)，应等于 (p - onehot) / N
-    logits = rng.standard_normal((6, 3))
-    p, onehot = softmax_forward(logits), np.eye(3)[y]
-    assert np.allclose(softmax_backward(-onehot / (6 * p), p), softmax_cross_entropy(logits, y)[1])
-    # 3. dropout：推理是恒等；训练时期望不变
-    assert np.array_equal(dropout_forward(x, 0.5, False, rng)[0], x)
-    assert abs(dropout_forward(np.ones((1000, 100)), 0.3, True, rng)[0].mean() - 1) < 0.01
-    print("all tests passed")
-
-
-if __name__ == "__main__":
-    run_layer_tests()
-```
-
-### 关键追问
-
-- **为什么 forward 要缓存？** $dW=X^\top dY$ 要用输入，ReLU 反向要知道哪里大于 0，dropout 反向要用同一个 mask。这也是训练比推理费显存的原因：每层的激活都要留到反向用完。
-- **最常见的 bug？** softmax CE 的梯度忘了除以 $N$，等于把学习率放大 $N$ 倍。另一个是直接在前向的 `probs` 上原地 `-= 1`，把前向结果也改坏了，要先 `.copy()`。
-- **权重怎么初始化？** 不能全 0：同一层的神经元输出和梯度永远相同，等于只有一个神经元（对称性问题），偏置为 0 没关系。配 ReLU 用 He 初始化（方差 $2/D_{in}$，补回 ReLU 截掉一半造成的方差减半），tanh、sigmoid 用 Xavier（方差 $2/(D_{in}+D_{out})$）。
-- **softmax 饱和时梯度怎样？** 输出接近 one-hot 时 $J=\operatorname{diag}(y)-yy^\top$ 每一项都接近 0，梯度几乎消失。注意力里除以 $\sqrt{d_k}$，就是为了不让点积太大把 softmax 推进饱和区（第 1 节）。
-- **忘了 `model.eval()` 会怎样？** dropout 继续随机丢，同一个输入每次输出不同，指标偏低还会抖。`torch.no_grad()` 只关梯度、不关 dropout，两者要一起用。
-
----
-
-## 11.1 BatchNorm 与 LayerNorm
+## 9. BatchNorm 与 LayerNorm
 
 两者公式相同：先标准化，再乘可学习的 γ、加 β，区别只在统计量沿哪个轴算。
 
@@ -2158,7 +1693,7 @@ if __name__ == "__main__":
 
 ---
 
-## 11.2 手写 LSTM 与参数量
+## 10. 手写 LSTM 与参数量
 
 两种考法：不用 `nn.LSTM` 手写前向，以及单独一道「给定结构，算参数量」。每个时间步由 $x_t:(B,D)$ 和 $h_{t-1}:(B,H)$ 一次算出四块预激活 $a_t=x_tW_{ih}^\top+b_{ih}+h_{t-1}W_{hh}^\top+b_{hh}$，其中 $W_{ih}:(4H,D)$，$W_{hh}:(4H,H)$，$a_t:(B,4H)$。按列切开，顺序 i、f、g、o（和 PyTorch 一致）：
 
@@ -2205,7 +1740,7 @@ class LSTM(nn.Module):
         return torch.stack(outputs, dim=1), (h, c)             # (B, T, H)，(B, H)，(B, H)
 ```
 
-反向交给 autograd 沿时间倒着传（BPTT）。`h2h.weight` 每一步都用到，梯度是所有时间步的和，和第 11 节「前向广播，反向求和」同理。
+反向交给 autograd 沿时间倒着传（BPTT）。`h2h.weight` 每一步都用到，梯度是所有时间步的和。
 
 ### 参数量
 
@@ -2277,7 +1812,7 @@ if __name__ == "__main__":
 
 ---
 
-## 12. 手写 N-gram 语言模型
+## 11. 手写 N-gram 语言模型
 
 语言模型给一句话打分：链式法则把句子概率拆成每个词在前文下的条件概率之积，Markov 假设让第 $t$ 个词只看前 $n-1$ 个词（$n=2$ 是 bigram）。条件概率直接数出来（MLE），$h$ 是前 $n-1$ 个词，$c(h)=\sum_w c(h,w)$ 是 $h$ **作为上下文**出现的次数：
 
@@ -2385,11 +1920,11 @@ if __name__ == "__main__":
 - **add-k 有什么问题？还有哪些平滑？** $V$ 很大时 add-k 从见过的词那里抢走太多概率，$k$ 一般取小于 1 并在验证集上调。改进有 Backoff（高阶没见过就退到低阶，stupid backoff 乘固定的 0.4）、Interpolation（$\lambda_3P_3+\lambda_2P_2+\lambda_1P_1$，$\lambda$ 在 held-out 上调）和 Kneser-Ney（计数减固定折扣，低阶分布用「跟在多少种不同的词后面」代替词频），Modified KN 是 n-gram 的事实标准。
 - **n 越大越好吗？** 不一定：可能的 n-gram 有 $V^n$ 种，n 越大越稀疏，大多数组合没出现过或只出现一两次，估计越不可靠。实践中常用 3~5 阶，配合 KN 平滑和大语料。
 - **Perplexity 怎么理解？** 它是平均负 log 似然（交叉熵）的指数，可以理解成「每一步平均在多少个词里犹豫」，对 $V$ 个词均匀猜时 PPL 正好是 $V$。比较 PPL 的前提是同一个词表、同样处理 `</s>` 和 `<unk>`，把更多词映射成 `<unk>` 会让 PPL 变低，模型本身并没有变好。
-- **和神经语言模型什么关系？** 目标相同：按链式法则预测下一个 token，用 PPL 评估，交叉熵 loss（第 9 节）就是 log PPL。N-gram 是一张计数表，上下文固定 $n-1$ 个词、各算各的；Transformer（第 1 节）用 embedding 共享参数、上下文长得多，所以不需要手工平滑。
+- **和神经语言模型什么关系？** 目标相同：按链式法则预测下一个 token，用 PPL 评估，交叉熵 loss（第 7 节）就是 log PPL。N-gram 是一张计数表，上下文固定 $n-1$ 个词、各算各的；Transformer（第 1 节）用 embedding 共享参数、上下文长得多，所以不需要手工平滑。
 
 ---
 
-## 13. 手写 BPE Tokenizer
+## 12. 手写 BPE Tokenizer
 
 BPE（Sennrich et al., 2016）从字符出发，反复把最常见的相邻符号对合并成新 token：高频词最终变成一个 token，罕见词和新词拆成学过的片段，最坏退回单个字符，只要字符见过就不会 OOV。
 
