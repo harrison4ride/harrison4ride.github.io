@@ -103,36 +103,54 @@ class MultiHeadAttention(nn.Module):
 | masked self-attention | Decoder | 目标前缀 | 目标前缀 | `tgt_mask`：目标端 padding 且因果，`(B, 1, T_tgt, T_tgt)` |
 | cross-attention | Decoder | Decoder 上一子层 | Encoder 输出 `memory` | `src_mask`（源句完整已知，不需要因果） |
 
+下面四个 `class` 是独立模块，只是放在同一个代码块里。`PositionwiseFeedForward` 的「逐位置」指所有 token 共用同一套线性层、分别做特征变换，不负责位置编码；`PositionalEncoding` 才负责给 embedding 加上位置向量，其中的 dropout 是相加后的正则化。整模型在进入 Encoder/Decoder 层堆叠前加一次位置编码，每个 Encoder/Decoder 层内部则各有一个 FFN。
+
 ```python
 class PositionwiseFeedForward(nn.Module):
-    """Linear(C -> d_ff) -> ReLU -> Linear(d_ff -> C)，每个位置独立计算"""
+    """逐 token 的前馈网络：变换特征，不混合不同位置的信息，也不添加位置信息。"""
 
     def __init__(self, d_model: int, d_ff: int):
         super().__init__()
-        self.fc1 = nn.Linear(d_model, d_ff)
-        self.fc2 = nn.Linear(d_ff, d_model)
-        self.relu = nn.ReLU()
+        self.fc1 = nn.Linear(d_model, d_ff)  # C -> d_ff：投影到中间特征空间，通常 d_ff > C
+        self.fc2 = nn.Linear(d_ff, d_model)  # d_ff -> C：恢复宽度，才能和输入做残差相加
+        self.relu = nn.ReLU()               # 引入非线性，否则两次线性变换仍等价于一次
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """(B, T, C) -> (B, T, C)"""
+        # nn.Linear 只作用于最后一维：B、T 不变，所有位置共用同一套权重
+        # 1. fc1：(B, T, C) -> (B, T, d_ff)
+        # 2. ReLU：负值置零，形状不变
+        # 3. fc2：(B, T, d_ff) -> (B, T, C)
         return self.fc2(self.relu(self.fc1(x)))
 
 
 class PositionalEncoding(nn.Module):
-    """PE[pos, 2i] = sin(pos / 10000^(2i/C))，PE[pos, 2i+1] = cos(同上)，加到 embedding 上再 dropout"""
+    """
+    固定正弦位置编码：给每个位置一个 C 维向量，加到 token embedding 上。
+    PE[pos, 2i] = sin(pos / 10000^(2i/C))，PE[pos, 2i+1] = cos(同上)。
+    本示例要求 d_model 为偶数，输入长度 T <= max_len。
+    """
 
     def __init__(self, d_model: int, max_len: int = 512, dropout: float = 0.1):
         super().__init__()
+        # dropout 是相加后的正则化，不负责生成位置编码；model.eval() 时不丢弃元素
         self.dropout = nn.Dropout(dropout)
+        # 1. 列出位置 pos = 0, 1, ..., max_len-1；加一维，便于和各频率广播相乘
         position = torch.arange(max_len).unsqueeze(1).float()                    # (max_len, 1)
+        # 2. 每一对通道共用一个频率：exp(-log(10000) * 2i/C) = 1 / 10000^(2i/C)
         div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))  # (C/2,)
+        # 3. 广播得到 (max_len, C/2) 的相位；偶数通道填 sin，奇数通道填 cos
         pe = torch.zeros(max_len, d_model)                                       # (max_len, C)
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
+        # 4. 加 batch 维便于复用；buffer 不是可训练参数，随 .to(device) 移动并存入 state_dict
         self.register_buffer("pe", pe.unsqueeze(0))   # (1, max_len, C)：不训练，但跟着 .to(device) 走、存进 state_dict
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """(B, T, C) -> (B, T, C)"""
+        # 1. 按实际长度 T 取前 T 个位置：(1, T, C)，同一套位置向量广播到 B 个样本
+        # 2. 与 embedding 逐元素相加，形状仍为 (B, T, C)
+        # 3. 对相加结果做 dropout；若只想加位置编码，可以省略这一步
         return self.dropout(x + self.pe[:, :x.size(1)])
 
 
@@ -143,13 +161,19 @@ class EncoderLayer(nn.Module):
         super().__init__()
         self.self_attn = MultiHeadAttention(d_model, num_heads)
         self.ffn = PositionwiseFeedForward(d_model, d_ff)
+        # 每个子层各有一套可学习的 LayerNorm 参数；沿最后的 C 维归一化
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)
+        # 对子层输出做 dropout，再和子层输入相加；不是对残差相加后的整体做 dropout
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor, src_mask: torch.Tensor) -> torch.Tensor:
         """x: (B, T_src, C)；src_mask: (B, 1, 1, T_src)。返回 (B, T_src, C)"""
+        # 1. self-attention：Q = K = V = x，读取源句各位置；src_mask 只屏蔽 padding
+        #    执行顺序：Attention -> Dropout -> 加原输入 x（残差）-> LayerNorm
         x = self.norm1(x + self.dropout(self.self_attn(x, x, x, src_mask)))
+        # 2. FFN：每个 token 独立变换特征，再做 Dropout -> 残差相加 -> LayerNorm
+        #    两个子层的输入输出均为 (B, T_src, C)，可以直接堆叠下一层
         return self.norm2(x + self.dropout(self.ffn(x)))
 
 
@@ -161,6 +185,7 @@ class DecoderLayer(nn.Module):
         self.self_attn = MultiHeadAttention(d_model, num_heads)
         self.cross_attn = MultiHeadAttention(d_model, num_heads)
         self.ffn = PositionwiseFeedForward(d_model, d_ff)
+        # 三个子层分别归一化，参数互不共享；都只沿最后的 C 维计算
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)
         self.norm3 = nn.LayerNorm(d_model)
@@ -168,12 +193,22 @@ class DecoderLayer(nn.Module):
 
     def forward(self, x: torch.Tensor, memory: torch.Tensor,
                 src_mask: torch.Tensor, tgt_mask: torch.Tensor) -> torch.Tensor:
-        """x: (B, T_tgt, C)；memory: (B, T_src, C)。返回 (B, T_tgt, C)"""
+        """
+        Args:
+            x: (B, T_tgt, C)，目标端当前表示
+            memory: (B, T_src, C)，Encoder 输出，在各 Decoder 层中复用
+            src_mask: (B, 1, 1, T_src)，屏蔽源端 padding
+            tgt_mask: (B, 1, T_tgt, T_tgt)，屏蔽目标端未来位置和 padding
+        Returns:
+            (B, T_tgt, C)，每个目标位置融合前缀和源句信息后的表示
+        """
+        # 每步都按 Sublayer -> Dropout -> 残差相加 -> LayerNorm 执行（Post-LN）
         # 1. masked self-attention：Q = K = V = decoder，tgt_mask 挡住未来和 padding
         x = self.norm1(x + self.dropout(self.self_attn(x, x, x, tgt_mask)))
         # 2. cross-attention：Q 来自 decoder，K、V 来自 memory，注意力矩阵 (B, H, T_tgt, T_src)
+        #    每个目标位置查询完整源句；输出长度由 Q 决定，仍为 T_tgt，memory 不被修改
         x = self.norm2(x + self.dropout(self.cross_attn(x, memory, memory, src_mask)))
-        # 3. FFN
+        # 3. FFN：逐 token 做 C -> d_ff -> C，返回 (B, T_tgt, C)
         return self.norm3(x + self.dropout(self.ffn(x)))
 ```
 
@@ -182,14 +217,19 @@ class DecoderLayer(nn.Module):
 ```python
 def make_src_mask(src: torch.Tensor, pad_id: int = 0) -> torch.Tensor:
     """(B, T_src) -> (B, 1, 1, T_src)，True = 真实 token；广播到每个头、每个 query"""
+    # 只限制哪些 key 可被读取：两个单例维分别对应 H 和 T_q
+    # Encoder self-attention 和 Decoder cross-attention 都可以复用这个源端 mask
     return (src != pad_id).unsqueeze(1).unsqueeze(2)
 
 
 def make_tgt_mask(tgt: torch.Tensor, pad_id: int = 0) -> torch.Tensor:
     """(B, T_tgt) -> (B, 1, T_tgt, T_tgt)：padding mask 与因果 mask 同时为 True 才可见"""
     seq_len = tgt.size(1)
+    # 1. padding mask：每个 query 都不能读取 PAD key
     pad_mask = (tgt != pad_id).unsqueeze(1).unsqueeze(2)                                # (B, 1, 1, T)
+    # 2. 因果 mask：行是 query 位置 i，列是 key 位置 j，只保留 j <= i（包括自己）
     causal = torch.tril(torch.ones(seq_len, seq_len, device=tgt.device)).bool()      # (T, T)，下三角
+    # 3. 广播后取交集，得到每个样本的可见位置；H 维仍为 1，供所有头共用
     return pad_mask & causal                                                          # (B, 1, T, T)
 
 
@@ -202,34 +242,47 @@ class Transformer(nn.Module):
         super().__init__()
         self.d_model = d_model
         self.pad_id = pad_id
+        # 源语言和目标语言分别查自己的词表：token id (B, T) -> 向量 (B, T, C)
         self.src_embed = nn.Embedding(src_vocab_size, d_model)
         self.tgt_embed = nn.Embedding(tgt_vocab_size, d_model)
+        # 正弦编码没有可训练参数，两端共用同一张位置表；各自在入栈前调用一次
         self.pos_enc = PositionalEncoding(d_model, max_len, dropout)
+        # 每次构造一个新层，各层参数独立；ModuleList 让 PyTorch 注册并管理这些子模块
         self.encoder_layers = nn.ModuleList(
             [EncoderLayer(d_model, num_heads, d_ff, dropout) for _ in range(num_layers)])
         self.decoder_layers = nn.ModuleList(
             [DecoderLayer(d_model, num_heads, d_ff, dropout) for _ in range(num_layers)])
+        # 输出投影与 FFN 是不同用途：C -> V，为目标词表中每个 token 产生一个分数
         self.fc_out = nn.Linear(d_model, tgt_vocab_size)
 
     def encode(self, src: torch.Tensor, src_mask: torch.Tensor) -> torch.Tensor:
         """src: (B, T_src) -> memory: (B, T_src, C)"""
+        # 1. 查 embedding -> 乘 sqrt(C) 调整量级 -> 加位置编码并 dropout
         x = self.pos_enc(self.src_embed(src) * math.sqrt(self.d_model))
+        # 2. 依次经过 N 个 Encoder 层，形状始终为 (B, T_src, C)
         for layer in self.encoder_layers:
             x = layer(x, src_mask)
+        # 3. 最后一层表示作为 memory，供每个 Decoder 层的 cross-attention 查询
         return x
 
     def decode(self, tgt: torch.Tensor, memory: torch.Tensor,
                src_mask: torch.Tensor, tgt_mask: torch.Tensor) -> torch.Tensor:
         """tgt: (B, T_tgt)，memory: (B, T_src, C) -> logits: (B, T_tgt, V)"""
+        # 1. 目标前缀也要查自己的 embedding，并在入栈前加位置编码
         x = self.pos_enc(self.tgt_embed(tgt) * math.sqrt(self.d_model))
+        # 2. 每层先读目标前缀，再查相同的源端 memory，形状始终为 (B, T_tgt, C)
         for layer in self.decoder_layers:
             x = layer(x, memory, src_mask, tgt_mask)
+        # 3. 投影到词表：(B, T_tgt, C) -> (B, T_tgt, V)
+        #    返回未归一化的 logits；训练时 CrossEntropyLoss 内部处理，无须先 softmax
         return self.fc_out(x)
 
     def forward(self, src: torch.Tensor, tgt: torch.Tensor) -> torch.Tensor:
         """src: (B, T_src)；tgt: (B, T_tgt)，以 BOS 开头的目标前缀（teacher forcing）"""
+        # 1. 根据 token id 创建 mask：源端屏蔽 PAD，目标端同时屏蔽 PAD 和未来位置
         src_mask = make_src_mask(src, self.pad_id)
         tgt_mask = make_tgt_mask(tgt, self.pad_id)
+        # 2. 源句编码成 memory，再结合目标前缀解码；训练时一次计算全部目标位置的 logits
         return self.decode(tgt, self.encode(src, src_mask), src_mask, tgt_mask)
 ```
 
