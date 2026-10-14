@@ -95,15 +95,18 @@ class MultiHeadAttention(nn.Module):
         return self.w_o(self.combine_heads(out))
 ```
 
-**第 2 步：FFN、位置编码、Encoder 层和 Decoder 层。** FFN 对每个位置单独做 `C → d_ff → C`（原论文 512 → 2048 → 512，ReLU）。位置编码用原论文的正弦编码，原理见 1.1 节。层结构按原论文的 Post-LN：每个子层都是 `x = LayerNorm(x + Dropout(Sublayer(x)))`。三个 attention 子层的分工：
+**第 2 步：FFN、位置编码、Encoder 层和 Decoder 层。** FFN 对每个位置单独做 `C → d_ff → C`（原论文 512 → 2048 → 512，ReLU）。位置编码用原论文的正弦编码，原理见 1.1 节。层结构按原论文的 Post-LN：每个子层都是 `x = LayerNorm(x + Dropout(Sublayer(x)))`。
 
-| 子层 | 所在 | Q 来自 | K、V 来自 | mask |
-| --- | --- | --- | --- | --- |
-| self-attention | Encoder | 源句 | 源句 | `src_mask`：源端 padding，`(B, 1, 1, T_src)` |
-| masked self-attention | Decoder | 目标前缀 | 目标前缀 | `tgt_mask`：目标端 padding 且因果，`(B, 1, T_tgt, T_tgt)` |
-| cross-attention | Decoder | Decoder 上一子层 | Encoder 输出 `memory` | `src_mask`（源句完整已知，不需要因果） |
+正弦编码
 
-下面四个 `class` 是独立模块，只是放在同一个代码块里。`PositionwiseFeedForward` 的「逐位置」指所有 token 共用同一套线性层、分别做特征变换，不负责位置编码；`PositionalEncoding` 才负责给 embedding 加上位置向量，其中的 dropout 是相加后的正则化。整模型在进入 Encoder/Decoder 层堆叠前加一次位置编码，每个 Encoder/Decoder 层内部则各有一个 FFN。
+$$
+PE_{(pos,2i)}=\sin\!\left(\frac{pos}{10000^{2i/d}}\right),\qquad
+PE_{(pos,2i+1)}=\cos\!\left(\frac{pos}{10000^{2i/d}}\right)
+$$
+
+记 $\omega_i=10000^{-2i/d}$。**时钟指针**：每对 $(\sin(pos\,\omega_i), \cos(pos\,\omega_i))$ 是单位圆上的一根指针，位置加 1 就转 $\omega_i$ 弧度。$i=0$ 每步转 1 弧度，像秒针；$i$ 越大转得越慢，像时针。一个位置就是所有指针读数的组合，和词向量相加后作为输入。原论文试过可学习的位置表，效果几乎一样，选正弦是希望能外推到更长的序列。
+
+**平移 = 旋转**：由和角公式，$PE_{pos+k}=M_k\,PE_{pos}$，$M_k$ 是把第 $i$ 对指针转 $k\omega_i$ 的块对角旋转矩阵，只和 $k$ 有关。所以模型用一个固定的线性变换就能表达「往后数 $k$ 个」，而且 $PE_{pos}\cdot PE_{pos+k}=\sum_i\cos(k\omega_i)$ 只依赖距离。PyTorch 模块见第 1 节。
 
 ```python
 class PositionwiseFeedForward(nn.Module):
@@ -321,76 +324,6 @@ if __name__ == "__main__":
 
 ---
 
-## 1.1 位置编码（白板讲解）
-
-白板三步：1）写「猫追狗」「狗追猫」说明为什么需要；2）写正弦公式、画时钟指针；3）画对比表讲相对位置、ALiBi、RoPE。
-
-attention 只算内容的两两点积，打乱输入顺序，输出只会跟着打乱（置换等变，$\operatorname{Attn}(PX)=P\,\operatorname{Attn}(X)$），FFN、LayerNorm 也逐位置计算。所以不加位置信息时，「猫追狗」和「狗追猫」里「猫」的表示完全一样，模型看到的只是词袋。
-
-### 正弦编码（原始 Transformer）
-
-$$
-PE_{(pos,2i)}=\sin\!\left(\frac{pos}{10000^{2i/d}}\right),\qquad
-PE_{(pos,2i+1)}=\cos\!\left(\frac{pos}{10000^{2i/d}}\right)
-$$
-
-记 $\omega_i=10000^{-2i/d}$。**时钟指针**：每对 $(\sin(pos\,\omega_i), \cos(pos\,\omega_i))$ 是单位圆上的一根指针，位置加 1 就转 $\omega_i$ 弧度。$i=0$ 每步转 1 弧度，像秒针；$i$ 越大转得越慢，像时针。一个位置就是所有指针读数的组合，和词向量相加后作为输入。原论文试过可学习的位置表，效果几乎一样，选正弦是希望能外推到更长的序列。
-
-**平移 = 旋转**：由和角公式，$PE_{pos+k}=M_k\,PE_{pos}$，$M_k$ 是把第 $i$ 对指针转 $k\omega_i$ 的块对角旋转矩阵，只和 $k$ 有关。所以模型用一个固定的线性变换就能表达「往后数 $k$ 个」，而且 $PE_{pos}\cdot PE_{pos+k}=\sum_i\cos(k\omega_i)$ 只依赖距离。PyTorch 模块见第 1 节。
-
-### 实现
-
-```python
-import numpy as np
-
-
-def sinusoidal_encoding_np(max_len: int, d_model: int) -> np.ndarray:
-    """Returns: (max_len, d_model)，第 pos 行是位置 pos 的编码。d_model 须为偶数。"""
-    pos = np.arange(max_len)[:, None]                        # (L, 1)
-    two_i = np.arange(0, d_model, 2)[None, :]                # (1, C/2)，公式里的 2i
-    angle = pos / np.power(10000.0, two_i / d_model)         # (L, C/2)，广播
-    pe = np.zeros((max_len, d_model))
-    pe[:, 0::2] = np.sin(angle)                              # 偶数维放 sin
-    pe[:, 1::2] = np.cos(angle)                              # 奇数维放 cos
-    return pe
-
-
-def test_sinusoidal_encoding_np() -> None:
-    pe = sinusoidal_encoding_np(64, 16)                      # (64, 16)
-    # 1. 位置 0 是 sin(0)=0 和 cos(0)=1 交替
-    assert pe.shape == (64, 16) and np.allclose(pe[0], np.tile([0.0, 1.0], 8))
-    # 2. 相似度只看距离 k：起点 10 和起点 30 结果相同，k=0 时等于 d/2，越远越小
-    sims = np.array([pe[10] @ pe[10 + k] for k in (0, 1, 4, 16)])
-    assert np.allclose(sims, [pe[30] @ pe[30 + k] for k in (0, 1, 4, 16)])
-    print(np.round(sims, 4))                                 # [8.     7.4852 5.5597 4.214 ]
-    print("all tests passed")
-
-
-if __name__ == "__main__":
-    test_sinusoidal_encoding_np()
-```
-
-### 对比表
-
-相对位置的出发点是「隔了几个词」往往比「排在第几」更重要，所以不改输入，在每层 attention 打分时加一项只依赖距离的量：$s_{ij}=q_i^\top k_j/\sqrt{d_k}+b(i-j)$。
-
-| 方法 | 做法 | 加在哪里 | 可学习 | 长度外推 | 代表模型 |
-| --- | --- | --- | --- | --- | --- |
-| 正弦 | 上面的公式 | 输入 embedding | 固定 | 公式能算任意位置，没训练过的长度效果不保证 | 原始 Transformer |
-| 可学习绝对位置 | $(L_{\max}, d)$ 的表，`tok_emb[ids] + pos_emb[:T]` | 输入 embedding | 可学习 | 不能超过表长 $L_{\max}$ | BERT、GPT-2 |
-| 相对位置（T5） | 每个 head 一个标量 $b(i-j)$，距离分桶（远处按对数合并） | attention 分数 | 可学习 | 远距离共用一个桶，任意长度都能算 | T5 |
-| ALiBi | $b(i-j)=-m_h(i-j)$，每个 head 固定斜率（8 个 head 取 1/2 到 1/256） | attention 分数 | 固定 | 好，这是它的设计目标 | BLOOM |
-| RoPE | 把 q、k 按各自位置旋转，点积只剩 $m-n$（1.2 节） | Q、K | 固定 | 原版一般，靠位置插值等方法扩长 | LLaMA |
-
-### 关键追问
-
-- **为什么相加而不是拼接？** 拼接会让维度变大，而且进第一个线性层时 $W[x; p]=W_x x+W_p p$，本来就是各自投影再相加。高维空间里语义和位置可以占近似正交的子空间，相加后仍能用线性投影分开。
-- **为什么 sin 和 cos 都要？为什么是 10000？** 单靠 sin 定不了相位（$\sin a=\sin(\pi-a)$），平移性质用到的和角公式也要同时有 sin 和 cos。10000 是经验值，让最慢的指针在常见长度内转不满一圈；它是超参数，Llama 3 把 RoPE 的 base 调到 500000。
-- **位置信息在哪一层注入？** 绝对位置（可学习、正弦）只在最底层加一次，靠残差传上去。T5 偏置、ALiBi、RoPE 在每一层的 attention 打分里都重新作用，而且只影响打分（RoPE 不碰 V）。
-- **长度外推怎么办？** 可学习位置直接不行，正弦能算但模型没见过，ALiBi 为外推而设计。RoPE 常用位置插值：目标长度 $L'$ 上的位置 $m$ 缩成 $mL/L'$，让转角落回训练时见过的范围，再少量微调（NTK-aware、YaRN 是改进版）。
-
----
-
 ## 1.2 RoPE（旋转位置编码）
 
 绝对位置编码把位置向量**加**到词向量上，长文本外推表现不佳。RoPE 用**旋转**表达位置：把 q、k 的每两个通道看作平面上的一个箭头，位置 $m$ 就把它转 $m\theta_i$（$\theta_i=10000^{-2i/d}$，低维转得快、高维转得慢），相当于把 1.1 节「平移 = 旋转」直接用在 Q、K 上。点积时绝对角度抵消，**只剩相对距离 $m-n$**，LLaMA、Qwen、ChatGLM 等主流开源模型都用它：
@@ -458,11 +391,11 @@ if __name__ == "__main__":
 
 训练时 decoder 一次看到整句答案（teacher forcing）；推理时只能自回归地一个一个生成：源句先 `encode` 一次得到 `memory`，再从 `[BOS]` 开始，每步把已生成的前缀喂给 `decode`，只取最后一个位置的 logits `(B, V)` 挑出下一个 token 拼到末尾，直到 EOS 或 `max_len`。各种方法只在「怎么挑」上不同：
 
-| 方法 | 怎么挑下一个 token | 输出 | 常见用途 |
-| --- | --- | --- | --- |
-| Greedy | argmax | 确定 | 抽取、代码、评测 |
-| Beam Search | 保留累计 log-prob 最高的 k 条路径 | 确定 | 翻译、摘要、语音识别（k 常取 4 到 5） |
-| 采样 | 温度缩放、top-k / top-p 截断后按概率抽 | 随机 | 对话、创意写作 |
+| 方法        | 怎么挑下一个 token                     | 输出 | 常见用途                              |
+| ----------- | -------------------------------------- | ---- | ------------------------------------- |
+| Greedy      | argmax                                 | 确定 | 抽取、代码、评测                      |
+| Beam Search | 保留累计 log-prob 最高的 k 条路径      | 确定 | 翻译、摘要、语音识别（k 常取 4 到 5） |
+| 采样        | 温度缩放、top-k / top-p 截断后按概率抽 | 随机 | 对话、创意写作                        |
 
 Beam 的分数是累计 log-prob（连乘变连加，防止下溢），排名时除以长度惩罚 $L^{\alpha}$（$L$ 是已生成的长度）：
 
@@ -1677,12 +1610,12 @@ if __name__ == "__main__":
 
 ### 对比
 
-|  | BatchNorm | LayerNorm | RMSNorm |
-| --- | --- | --- | --- |
-| 统计量的轴 | batch 维 `axis=0` | 特征维 `axis=-1` | 特征维，只算均方根 |
-| 依赖 batch | 是，batch 小时噪声大 | 否 | 否 |
-| 训练和推理不同 | 是：训练用 batch 统计量，推理用 running 统计量 | 否 | 否 |
-| 常见位置 | batch 较大的前馈网络 | Transformer（原论文、BERT、GPT） | LLaMA 等 decoder-only LLM |
+|                | BatchNorm                                      | LayerNorm                        | RMSNorm                   |
+| -------------- | ---------------------------------------------- | -------------------------------- | ------------------------- |
+| 统计量的轴     | batch 维 `axis=0`                              | 特征维 `axis=-1`                 | 特征维，只算均方根        |
+| 依赖 batch     | 是，batch 小时噪声大                           | 否                               | 否                        |
+| 训练和推理不同 | 是：训练用 batch 统计量，推理用 running 统计量 | 否                               | 否                        |
+| 常见位置       | batch 较大的前馈网络                           | Transformer（原论文、BERT、GPT） | LLaMA 等 decoder-only LLM |
 
 ### 关键追问
 
@@ -1753,12 +1686,12 @@ $$
 - **堆叠**：第 1 层 $D_{in}=D$；之后各层吃上一层的输出，单向 $D_{in}=H$，双向 $D_{in}=2H$（两个方向拼起来）。
 - **双向**：每层正、反两套独立参数，每层乘 2。**换模型只换 k**：LSTM 4、GRU 3、vanilla RNN 1。
 
-| 算例（D = 100，H = 256，PyTorch 约定） | 计算 | 参数量 |
-| --- | --- | --- |
-| LSTM，1 层单向 | 4 × (256 × 356 + 2 × 256) | 366,592 |
-| 同上，只算一组 bias | 4 × (256 × 356 + 256) | 365,568 |
-| GRU，1 层单向 | 3 × (256 × 356 + 2 × 256) | 274,944 |
-| LSTM，2 层双向 | 第 1 层 2 × 366,592；第 2 层 2 × 4 × (256 × 768 + 512) | 2,310,144 |
+| 算例（D = 100，H = 256，PyTorch 约定） | 计算                                                   | 参数量    |
+| -------------------------------------- | ------------------------------------------------------ | --------- |
+| LSTM，1 层单向                         | 4 × (256 × 356 + 2 × 256)                              | 366,592   |
+| 同上，只算一组 bias                    | 4 × (256 × 356 + 256)                                  | 365,568   |
+| GRU，1 层单向                          | 3 × (256 × 356 + 2 × 256)                              | 274,944   |
+| LSTM，2 层双向                         | 第 1 层 2 × 366,592；第 2 层 2 × 4 × (256 × 768 + 512) | 2,310,144 |
 
 ```python
 def rnn_param_count(input_size: int, hidden_size: int, num_layers: int = 1,
