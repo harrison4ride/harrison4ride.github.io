@@ -649,183 +649,131 @@ if __name__ == "__main__":
 
 ## 2. KMeans
 
-两步循环：**分配**（每个点归到最近的中心）和**更新**（每个簇的均值当新中心），直到中心不再移动。它在最小化 inertia，也就是每个点到所属中心的平方距离之和 $J=\sum_{i}\min_{j}\|x_i-\mu_j\|^2$。
+两步循环：**分配**（每个点归到最近的中心）和**更新**（每个簇的均值当新中心），直到中心基本不再移动。它在最小化每个点到所属中心的平方距离之和，也叫 inertia：$J=\sum_i\min_j\|x_i-\mu_j\|^2$。
 
-**算距离那行最常考。** `((X[:, None, :] - centroids[None, :, :]) ** 2).sum(axis=2)`：$(n,1,d)$ 减 $(1,k,d)$ 广播成 $(n,k,d)$，即每个点减每个中心；沿坐标维 `axis=2` 求和得到 $(n,k)$ 的平方距离矩阵，再 `argmin(axis=1)` 给每个点挑最近的中心。一行代替两层 for 循环。中间数组是 $(n,k,d)$，$k$ 小所以没问题；KNN 的训练点很多，改用第 3 节的展开公式。
+### 实现（面试基础版）
 
-**k-means++ 初始化。** 纯随机初始化可能把中心挤在一起。k-means++ 第一个中心随机挑，之后每个点以正比于 $D(x)^2$（到最近已选中心的平方距离）的概率被选为下一个中心，让初始中心互相远离。它只改初始化，是 sklearn 的默认。
-
-### 实现（CodeSignal 风格）
-
-接口仿 sklearn：`fit` 返回自己，`predict` 返回簇下标，结果存在 `centroids`、`labels_`、`inertia_`。边界处理：空簇保留旧中心；收敛用 `tol` 判断，浮点数不用 `==`；跑 `n_init` 次留 inertia 最小的一次，因为 k-means 只保证局部最优。
+假设输入是有效的 NumPy 数组 `X (n, d)`，`1 <= n_clusters <= n`。随机选 k 个样本作初始中心，随后反复分配、更新。`fit` 返回自己，`centroids` 保存中心，`labels_` 保存训练样本的簇下标。
 
 ```python
-from typing import Optional, Union
-
 import numpy as np
 
 
 class KMeans:
-    def __init__(self, n_clusters: int, max_iter: int = 100, tol: float = 1e-4,
-                 init: Union[str, np.ndarray] = "k-means++", n_init: int = 10,
-                 random_state: Optional[int] = None):
-        """init: "k-means++"，或直接给定初始中心 (k, d)；n_init: 重启几次"""
+    def __init__(self, n_clusters: int, max_iter: int = 100, tol: float = 1e-4):
         self.n_clusters = n_clusters
         self.max_iter = max_iter
         self.tol = tol
-        self.init = init
-        self.n_init = n_init
-        self.random_state = random_state
-        self.centroids: Optional[np.ndarray] = None    # (k, d)
-        self.labels_: Optional[np.ndarray] = None      # (n,)
-        self.inertia_: Optional[float] = None          # 每个点到所属中心的平方距离之和
-
-    @staticmethod
-    def _sq_dist(X: np.ndarray, C: np.ndarray) -> np.ndarray:
-        """X: (n, d)，C: (k, d)。返回平方距离 (n, k)；不开根号，argmin 不变"""
-        return ((X[:, None, :] - C[None, :, :]) ** 2).sum(axis=2)
-
-    def _init_centroids(self, X: np.ndarray, rng: np.random.Generator) -> np.ndarray:
-        """X: (n, d)。返回初始中心 (k, d)"""
-        n = X.shape[0]
-        if self.n_clusters > n:
-            raise ValueError(f"n_clusters={self.n_clusters} > n_samples={n}")
-        if not isinstance(self.init, str):                   # 1. 直接给定初始中心
-            return np.array(self.init, dtype=float)
-        centroids = [X[rng.integers(n)]]                     # 2. k-means++：第一个中心随机挑
-        for _ in range(1, self.n_clusters):
-            d2 = self._sq_dist(X, np.array(centroids)).min(axis=1)    # (n,) 到最近已选中心
-            probs = d2 / d2.sum() if d2.sum() > 0 else None           # 3. 正比于 D(x)^2；全部重合时均匀抽
-            centroids.append(X[rng.choice(n, p=probs)])
-        return np.array(centroids)
-
-    def _run_once(self, X: np.ndarray, rng: np.random.Generator) -> np.ndarray:
-        """跑一次完整的 k-means。X: (n, d)。返回最终中心 (k, d)"""
-        centroids = self._init_centroids(X, rng)                      # (k, d)
-        for _ in range(self.max_iter):
-            labels = self._sq_dist(X, centroids).argmin(axis=1)       # 1. 分配 (n,)
-            new_centroids = centroids.copy()
-            for j in range(self.n_clusters):                          # 2. 更新：取簇均值，空簇保留旧中心
-                members = X[labels == j]                              # (n_j, d)
-                if len(members) > 0:
-                    new_centroids[j] = members.mean(axis=0)
-            if np.linalg.norm(new_centroids - centroids) <= self.tol:   # 3. 中心几乎不动就停
-                return new_centroids
-            centroids = new_centroids
-        return centroids
 
     def fit(self, X: np.ndarray) -> "KMeans":
-        """X: (n, d)"""
-        X = np.asarray(X, dtype=float)
-        rng = np.random.default_rng(self.random_state)
-        best_inertia, best_centroids = np.inf, None
-        for _ in range(self.n_init if isinstance(self.init, str) else 1):   # 给定初始中心时只跑一次
-            centroids = self._run_once(X, rng)
-            inertia = float(self._sq_dist(X, centroids).min(axis=1).sum())
-            if inertia < best_inertia:                                # 4. 留 inertia 最小的一次
-                best_inertia, best_centroids = inertia, centroids
-        self.centroids, self.inertia_ = best_centroids, best_inertia
-        self.labels_ = self.predict(X)                                # 5. 用最终中心算 labels_
+        """X: (n, d)。分配到最近中心，再用簇内均值更新中心。"""
+        X = np.asarray(X, dtype=float)  # 中心要存均值，使用浮点数
+        # 1. 随机选 k 个不同样本作为初始中心：(k, d)
+        indices = np.random.choice(len(X), self.n_clusters, replace=False)
+        self.centroids = X[indices].copy()
+
+        for _ in range(self.max_iter):
+            # 2. 分配：每个样本归到最近中心，得到 labels (n,)
+            labels = self.predict(X)
+
+            # 3. 更新：对每个簇沿样本维求均值，得到新的中心 (k, d)
+            new_centroids = self.centroids.copy()
+            for j in range(self.n_clusters):
+                points = X[labels == j]       # (n_j, d)，第 j 个簇的所有点
+                if len(points) > 0:          # 空簇保留旧中心，避免对空数组求均值
+                    new_centroids[j] = points.mean(axis=0)
+
+            # 4. 保存新中心；整体移动量小于 tol 就停止
+            shift = np.linalg.norm(new_centroids - self.centroids)
+            self.centroids = new_centroids
+            if shift < self.tol:
+                break
+
+        self.labels_ = self.predict(X)  # 用最终中心重新分配一次
         return self
 
     def predict(self, X: np.ndarray) -> np.ndarray:
-        """X: (m, d)。返回每个点最近中心的下标 (m,)"""
-        if self.centroids is None:
-            raise RuntimeError("call fit before predict")
-        return self._sq_dist(np.asarray(X, dtype=float), self.centroids).argmin(axis=1)
+        """X: (m, d) -> 每个点最近中心的下标 (m,)"""
+        # (m, 1, d) - (1, k, d) -> (m, k, d)，对特征维求和 -> (m, k)
+        distances = ((X[:, None, :] - self.centroids[None, :, :]) ** 2).sum(axis=2)
+        return distances.argmin(axis=1)  # 每行选距离最小的中心，不用开根号
 ```
+
+**距离计算怎么读？** `X[:, None, :]` 给样本增加一个中心维，`centroids[None, :, :]` 给中心增加一个样本维。广播相减就得到「每个点减每个中心」，平方后沿特征维 `axis=2` 求和，得到 `(m, k)` 的平方距离矩阵。`argmin(axis=1)` 为每个点选一个中心。
 
 ### CodeSignal ML Core 版（纯 Python）
 
-ML Core 的 k-Means 题不许 import（见基础篇第 0 节）：数据是 list of lists，辅助函数放顶层，入口叫 `solution`。初始中心以题面为准，这里取前 k 个点；平局取下标小的中心，和 `np.argmin` 一致。
+题面不许 import 时，用 list 和循环写同样的两步。初始中心按题面指定；这里取前 k 个点，距离相同取下标较小的中心。
 
 ```python
 def squared_distance(p: list, q: list) -> float:
     return sum((a - b) ** 2 for a, b in zip(p, q))
 
 
-def assign_clusters(data: list, centroids: list) -> list:
-    """每个点最近中心的下标；min 遇到平局返回第一个，即下标小的"""
-    k = len(centroids)
-    return [min(range(k), key=lambda c: squared_distance(p, centroids[c])) for p in data]
-
-
-def update_centroids(data: list, labels: list, centroids: list) -> list:
-    """每个簇取均值；空簇保留旧中心"""
-    new_centroids = []
-    for c in range(len(centroids)):
-        members = [p for p, label in zip(data, labels) if label == c]
-        mean = [sum(col) / len(members) for col in zip(*members)]       # zip(*members) 按列取
-        new_centroids.append(mean if members else list(centroids[c]))
-    return new_centroids
-
-
 def solution(data: list, k: int, max_iter: int = 100) -> list:
-    """data: n 个点，每个点是 d 个 float 的 list。返回每个点的簇下标（长度 n 的 list）"""
-    centroids = [list(p) for p in data[:k]]                    # 1. 初始化：前 k 个点
-    labels = assign_clusters(data, centroids)
+    """data: n 个 d 维点。返回每个点的簇下标。"""
+    centroids = [list(p) for p in data[:k]]
     for _ in range(max_iter):
-        centroids = update_centroids(data, labels, centroids)  # 2. 更新中心
-        new_labels = assign_clusters(data, centroids)          # 3. 重新分配
-        if new_labels == labels:                               # 4. 分配不变，均值也不变，收敛
+        # 1. 分配：min 返回距离最小的中心下标
+        labels = [min(range(k), key=lambda j: squared_distance(p, centroids[j])) for p in data]
+
+        # 2. 更新：逐簇计算每一维的均值；空簇保留旧中心
+        new_centroids = []
+        for j in range(k):
+            points = [p for p, label in zip(data, labels) if label == j]
+            if points:
+                mean = [sum(col) / len(points) for col in zip(*points)]
+                new_centroids.append(mean)
+            else:
+                new_centroids.append(centroids[j])
+
+        # 相同的分组会算出相同的均值；这里比较列表，不引入额外的容差参数
+        if new_centroids == centroids:
             break
-        labels = new_labels
-    return labels
+        centroids = new_centroids
+
+    return [min(range(k), key=lambda j: squared_distance(p, centroids[j])) for p in data]
 ```
 
-### Example
+### Example 与自测
 
 ```python
-np.random.seed(42)
-X = np.random.rand(100, 2)                       # (100, 2)
-model = KMeans(n_clusters=3, random_state=42).fit(X)
-print(model.centroids.shape, model.labels_.shape, round(model.inertia_, 4))   # (3, 2) (100,) 5.8103
-print(solution([[0.0, 0.0], [10.0, 10.0], [0.5, 0.0], [10.0, 9.5]], k=2))     # [0, 1, 0, 1]
-rng = np.random.default_rng(0)                   # 三团分得很开的点 (150, 2)
-blobs = np.vstack([np.array(c) + rng.normal(scale=0.5, size=(50, 2)) for c in [(0, 0), (5, 5), (0, 5)]])
-for n_init in (1, 10):
-    m = KMeans(n_clusters=3, n_init=n_init, random_state=0).fit(blobs)
-    print(n_init, round(m.inertia_, 2), sorted(np.bincount(m.labels_).tolist()))
-# 1 719.32 [23, 27, 100]：只跑一次就陷进局部最优，两团被合成了一团
-# 10 75.58 [50, 50, 50]
-```
+np.random.seed(0)  # 固定随机种子，让例子可复现
+X = np.array([[0, 0], [0, 1], [1, 0], [9, 9], [9, 10], [10, 9]])
+model = KMeans(n_clusters=2).fit(X)
+print(model.centroids)  # 两个中心约为 (0.33, 0.33) 和 (9.33, 9.33)，编号可能相反
+print(model.labels_)   # 前三个点一簇，后三个点一簇
 
-### 自测
-
-```python
-def test_kmeans() -> None:
-    rng = np.random.default_rng(0)
-    X = np.vstack([np.array(c) + rng.normal(scale=0.5, size=(50, 2)) for c in [(0, 0), (5, 5), (0, 5)]])
-    model = KMeans(n_clusters=3, random_state=0).fit(X)
-    pairs = set(zip(np.repeat(np.arange(3), 50), model.labels_))                 # (真实簇, 预测簇)
-    assert len(pairs) == 3 and len(set(model.labels_)) == 3                      # 1. 一一对应，编号可以不同
-    assert np.isclose(model.inertia_, KMeans._sq_dist(X, model.centroids).min(axis=1).sum())   # 2. 和中心一致
-    Xs = X[rng.permutation(len(X))]           # 3. 纯 Python 版 == NumPy 版：初始中心相同，tol=0 跑到完全不动
-    assert solution(Xs.tolist(), 3) == KMeans(n_clusters=3, init=Xs[:3], tol=0.0).fit(Xs).labels_.tolist()
-    print("all tests passed")
-
-
-if __name__ == "__main__":
-    test_kmeans()
+# 簇编号本身没有意义：检查两组点各自同簇、两组之间不同簇
+labels = model.labels_
+assert np.all(labels[:3] == labels[0])
+assert np.all(labels[3:] == labels[3])
+assert labels[0] != labels[3]
+assert np.allclose(model.centroids[labels[0]], [1 / 3, 1 / 3])
+assert np.allclose(model.centroids[labels[3]], [28 / 3, 28 / 3])
+assert np.array_equal(model.predict(np.array([[0, 0], [10, 10]])), labels[[0, 3]])
+assert solution([[0, 0], [10, 10], [0, 1], [10, 9]], k=2) == [0, 1, 0, 1]
+print("all tests passed")
 ```
 
 ### 关键追问
 
-- **收敛到全局最优吗？** 不保证。每轮 inertia 单调不增，只收敛到局部最优，所以要 k-means++ 加多次重启（Example 里 `n_init=1` 就把两团合成了一团）。
-- **空簇怎么办？** 保留旧中心（上面的写法），或者把它重置到离自己中心最远的那个点。
-- **复杂度？** 每轮 $O(nkd)$，$n$ 是样本数，$k$ 是簇数，$d$ 是维度。距离对特征尺度敏感，先标准化。
-- **k 怎么选？** inertia 随 k 增大单调下降，不能直接取最小；画 inertia 对 k 的曲线找拐点（肘部法），或者比较 silhouette score。
-- **CodeSignal 上最常见的丢分点？** 初始中心、平局规则、最大轮数没按题面写。hidden tests 比对的是确定的输出，题面说取前 k 个点当初始中心就必须照做。
+- **收敛到全局最优吗？** 不保证，初始化会影响结果。追问时再补充 k-means++（按到最近中心的平方距离加权选新中心）和多次重启（选 inertia 最小的一次）。
+- **空簇怎么办？** 上面保留旧中心；也可以重置到离当前中心最远的点。
+- **复杂度？** 每轮 $O(nkd)$，n 是样本数、k 是簇数、d 是维度。上面广播距离的临时数组占 $O(nkd)$ 空间。
+- **k 怎么选？** inertia 随 k 增大单调下降，不能直接取最小；用肘部法或 silhouette score。
+- **为什么要标准化？** 欧氏距离会被尺度较大的特征主导。
+- **题面指定初始中心怎么办？** 将随机选中心那两行替换成题面要求；最大轮数、距离平局规则也按题面执行。
 
 ---
 
 ## 3. KNN
 
-KNN 没有训练过程：`fit` 只把训练数据存起来，预测时找离新点最近的 $k$ 个训练点，分类做多数投票，回归取标签均值。训练几乎免费，推理很贵。
+KNN 的 `fit` 只保存训练数据。预测时，对每个新点**算距离 → 排序取最近的 k 个 → 多数投票**。分类投票，回归则取邻居标签的均值。
 
-$m$ 个测试点对 $n$ 个训练点，第 2 节的广播写法会生成 $(m,n,d)$ 的中间数组，$n$ 一大就撑爆内存。把平方距离展开成 $\|a-b\|^2=\|a\|^2-2\,a\cdot b+\|b\|^2$，中间项对所有点对一起算就是一次矩阵乘法 $AB^\top$，内存只要 $(m,n)$。
+### 实现（面试基础版）
 
-### 实现
+先写最常见的分类版本。假设 `X`、`y` 是有效的 NumPy 数组，`1 <= k <= 训练样本数`，先调用 `fit` 再调用 `predict`。
 
 ```python
 from collections import Counter
@@ -833,70 +781,59 @@ from collections import Counter
 import numpy as np
 
 
-def pairwise_sq_dist(A: np.ndarray, B: np.ndarray) -> np.ndarray:
-    """A: (m, d)，B: (n, d)。返回 (m, n) 的平方距离矩阵"""
-    A_sq = (A ** 2).sum(axis=1, keepdims=True)    # (m, 1)
-    B_sq = (B ** 2).sum(axis=1)                   # (n,)，相加时广播成 (1, n)
-    d2 = A_sq - 2 * A @ B.T + B_sq                # (m, n)
-    return np.maximum(d2, 0)                      # 两个大数相减可能得到 -1e-12，开根号会变 nan
-
-
 class KNN:
-    def __init__(self, k: int = 3, task: str = "classification"):
+    def __init__(self, k: int = 3):
         self.k = k
-        self.task = task                          # "classification" 或 "regression"
 
     def fit(self, X: np.ndarray, y: np.ndarray) -> "KNN":
-        """X: (n, d)，y: (n,)。lazy learning：只存数据"""
-        self.X_train = np.asarray(X, dtype=float)
-        self.y_train = np.asarray(y)
+        """X: (n, d)，y: (n,)。保存数据，没有参数训练。"""
+        self.X_train = X
+        self.y_train = y
         return self
 
     def predict(self, X: np.ndarray) -> np.ndarray:
-        """X: (m, d)。返回 (m,)"""
-        k = min(self.k, len(self.X_train))
-        d2 = pairwise_sq_dist(np.asarray(X, dtype=float), self.X_train)   # (m, n)，找最近邻不用开根号
-        # 1. argpartition 只把每行最小的 k 个挪到前面，O(n)，这 k 个之间无序
-        idx = np.argpartition(d2, k - 1, axis=1)[:, :k]                     # (m, k)
-        # 2. 这 k 个按距离排好，平票时 Counter 选先出现的类别，即离得更近的那一类
-        order = np.argsort(np.take_along_axis(d2, idx, axis=1), axis=1)     # (m, k)
-        neighbor_y = self.y_train[np.take_along_axis(idx, order, axis=1)]   # (m, k)
-        if self.task == "regression":
-            return neighbor_y.mean(axis=1)                                  # 3. 回归：取均值
-        return np.array([Counter(row).most_common(1)[0][0] for row in neighbor_y])   # 3. 分类：投票
+        """X: (m, d) -> 预测类别 (m,)"""
+        predictions = []
+        for x in X:
+            # 1. 当前点 (d,) 与全部训练点 (n, d) 相减，得到 n 个平方距离
+            distances = ((self.X_train - x) ** 2).sum(axis=1)  # (n,)，不用开根号
+            # 2. 按距离从小到大排序，取前 k 个训练样本的下标
+            indices = np.argsort(distances)[:self.k]         # (k,)
+            # 3. 取邻居标签，多数投票得到当前点的预测类别
+            neighbor_labels = self.y_train[indices]          # (k,)
+            prediction = Counter(neighbor_labels).most_common(1)[0][0]
+            predictions.append(prediction)
+        return np.array(predictions)
 ```
 
-### 自测
+`Counter` 统计每个类别出现的次数，`most_common(1)` 返回票数最多的 `(类别, 次数)`，所以 `[0][0]` 取出类别。票数相同时，这个写法选在邻居列表中先出现的类别。回归版只需把投票那行换成 `prediction = neighbor_labels.mean()`。
+
+### Example 与自测
 
 ```python
-from sklearn.neighbors import KNeighborsClassifier, KNeighborsRegressor
+X_train = np.array([[0, 0], [0, 1], [1, 0], [9, 9], [9, 10], [10, 9]])
+y_train = np.array([0, 0, 0, 1, 1, 1])
+X_test = np.array([[0.2, 0.2], [9.2, 9.2]])
 
+model = KNN(k=3).fit(X_train, y_train)
+predictions = model.predict(X_test)
+print(predictions)  # [0 1]
+assert np.array_equal(predictions, [0, 1])
 
-def test_knn() -> None:
-    rng = np.random.default_rng(0)
-    X_train = np.vstack([rng.normal(0, 1, (50, 2)), rng.normal(3, 1, (50, 2))])   # (100, 2)
-    y_train = np.array([0] * 50 + [1] * 50)
-    X_test = rng.normal(1.5, 2, (40, 2))                                          # (40, 2)
-    brute = ((X_test[:, None, :] - X_train[None, :, :]) ** 2).sum(axis=2)        # (40, 100)
-    assert np.allclose(pairwise_sq_dist(X_test, X_train), brute)                 # 1. 展开公式 == 广播
-    pred = KNN(k=5).fit(X_train, y_train).predict(X_test)                        # 2. 二分类、k 奇数不会平票
-    assert np.array_equal(pred, KNeighborsClassifier(5).fit(X_train, y_train).predict(X_test))
-    reg = KNN(k=5, task="regression").fit(X_train, X_train[:, 0]).predict(X_test)
-    assert np.allclose(reg, KNeighborsRegressor(5).fit(X_train, X_train[:, 0]).predict(X_test))
-    print("all tests passed")
-
-
-if __name__ == "__main__":
-    test_knn()
+# 用 k=1 检查预测确实跟随最近样本的标签；标签也可以是字符串
+model = KNN(k=1).fit(X_train, np.array(["a", "b", "c", "d", "e", "f"]))
+assert np.array_equal(model.predict(np.array([[0, 0.9], [9.9, 9]])), ["b", "f"])
+print("all tests passed")
 ```
 
 ### 关键追问
 
-- **复杂度？** `fit` 是 $O(1)$，但要 $O(nd)$ 内存；预测 $m$ 个点 $O(mnd)$，每行选 top-k 用 `argpartition` 是 $O(n)$。
-- **k 怎么选？** k 太小对噪声敏感、容易过拟合，k 太大边界过平、容易欠拟合；用交叉验证选，二分类取奇数避免平票。
-- **为什么要标准化？** 距离会被尺度最大的特征主导，比如年收入（0 到 $10^6$）会盖住年龄（0 到 100）。
-- **数据量大或者高维怎么办？** 低维用 KD-Tree、Ball Tree 剪枝；高维时最近和最远的距离趋于相同（维度灾难），先降维或用 embedding，再上近似最近邻索引（FAISS 的 IVF、HNSW）。RAG 的向量检索就是 KNN，距离常用第 8 节的余弦相似度。
-- **ML Core 不许 import 怎么写？** 和第 2 节纯 Python 版同一个套路：顶层写 `euc_dist` 辅助函数，`solution(train_data, test_data, k)` 里对每个测试点按距离排序取前 k 个，再用 dict 计票。
+- **复杂度？** 保存数组引用的 `fit` 是 $O(1)$，保留的训练数据占 $O(nd)$ 空间；每个测试点算距离 $O(nd)$、完整排序 $O(n\log n)$，m 个测试点共 $O(m(nd+n\log n))$。逐个预测时，距离计算的临时数组占 $O(nd)$ 空间。
+- **怎么优化？** 追问时再用 `argpartition` 以 $O(n)$ 选出最近 k 个；批量算距离可展开 $\|a-b\|^2=\|a\|^2-2a\cdot b+\|b\|^2$，避免构造 `(m, n, d)` 数组。
+- **k 怎么选？** k 小对噪声敏感，k 大容易欠拟合；用交叉验证选择。二分类选奇数 k 可以避免投票平局，多分类仍可能平局。
+- **为什么要标准化？** 距离会被尺度最大的特征主导，比如年收入会盖住年龄。
+- **数据量大或者高维怎么办？** 低维可用 KD-Tree、Ball Tree；高维可先降维或用 embedding，再使用近似最近邻索引。
+- **题面不许 import 怎么写？** 用循环算平方距离，`sorted` 取前 k 个，再用 dict 计票；核心流程不变。
 
 ---
 
