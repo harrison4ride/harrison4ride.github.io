@@ -606,30 +606,18 @@ class KMeans:
         self.centroids = X[indices].copy()
 
         for _ in range(self.max_iter):
-            # 2. 分配：每个样本归到最近中心，得到 labels (n,)
-            labels = self.predict(X)
+            # 2. 算距离，找归属
+            distances = np.sum((X[:, None, :] - self.centroids[None, :, :]) ** 2, axis=2)
+            labels = np.argmin(distances, axis=1)
 
             # 3. 更新：对每个簇沿样本维求均值，得到新的中心 (k, d)
-            new_centroids = self.centroids.copy()
-            for j in range(self.n_clusters):
-                points = X[labels == j]       # (n_j, d)，第 j 个簇的所有点
-                if len(points) > 0:          # 空簇保留旧中心，避免对空数组求均值
-                    new_centroids[j] = points.mean(axis=0)
+            # 3. 更新中心
+            new_centroids = np.array([X[labels == i].mean(axis=0) for i in range(self.n_clusters)])
 
-            # 4. 保存新中心；整体移动量小于 tol 就停止
-            shift = np.linalg.norm(new_centroids - self.centroids)
-            self.centroids = new_centroids
-            if shift < self.tol:
+            # 4. 如果中心不动了，就停止
+            if np.all(centroids == new_centroids):
                 break
-
-        self.labels_ = self.predict(X)  # 用最终中心重新分配一次
-        return self
-
-    def predict(self, X: np.ndarray) -> np.ndarray:
-        """X: (m, d) -> 每个点最近中心的下标 (m,)"""
-        # (m, 1, d) - (1, k, d) -> (m, k, d)，对特征维求和 -> (m, k)
-        distances = ((X[:, None, :] - self.centroids[None, :, :]) ** 2).sum(axis=2)
-        return distances.argmin(axis=1)  # 每行选距离最小的中心，不用开根号
+            self.centroids = new_centroids
 ```
 
 **距离计算怎么读？** `X[:, None, :]` 给样本增加一个中心维，`centroids[None, :, :]` 给中心增加一个样本维。广播相减就得到「每个点减每个中心」，平方后沿特征维 `axis=2` 求和，得到 `(m, k)` 的平方距离矩阵。`argmin(axis=1)` 为每个点选一个中心。
