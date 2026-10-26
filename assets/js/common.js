@@ -25,7 +25,28 @@ $(document).ready(function () {
     });
     var navSelector = "#toc-sidebar";
     var $myNav = $(navSelector);
-    Toc.init($myNav);
+    var $wiki = $(".wiki-content");
+    if ($wiki.length) {
+      // Wiki questions use a third navigation level, beyond bootstrap-toc's default depth.
+      $myNav.empty().attr("data-toggle", "toc").attr("aria-label", "本页目录").addClass("wiki-toc");
+      var parents = [{ level: 1, $item: $myNav }];
+      $wiki.find("h2, h3, h4").not("[data-toc-skip]").each(function () {
+        var level = Toc.helpers.getNavLevel(this);
+        while (parents[parents.length - 1].level >= level) {
+          parents.pop();
+        }
+        var $parent = parents[parents.length - 1].$item;
+        var $list = $parent.children("ul").first();
+        if (!$list.length) {
+          $list = Toc.helpers.createChildNavList($parent);
+        }
+        var $item = Toc.helpers.generateNavItem(this);
+        $list.append($item);
+        parents.push({ level: level, $item: $item });
+      });
+    } else {
+      Toc.init($myNav);
+    }
     $("body").scrollspy({
       target: navSelector,
     });
