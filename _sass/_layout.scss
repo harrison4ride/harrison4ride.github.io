@@ -31,6 +31,14 @@ body.sticky-bottom-footer {
   max-width: $max-content-width;
 }
 
+// Markdown images can be wider than the wiki's main column.
+.wiki-content img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 1rem auto;
+}
+
 // Profile
 .profile {
   img {
