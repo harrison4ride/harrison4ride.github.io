@@ -7,13 +7,14 @@
 # time. Nothing in the source folders is modified, so the markdown can be edited freely
 # and these pages regenerate on every build.
 #
-#   ai_research_wiki/*.md  ->  /wiki/<slug>/        (README.md -> /wiki/)
-#   deeplearning/*.md      ->  /deeplearning/<slug>/ (README.md -> /deeplearning/)
+#   ai_research_wiki/**/*.md -> /wiki/<path>/      (README.md -> /wiki/)
+#   deeplearning/**/*.md  -> /deeplearning/<path>/ (README.md -> /deeplearning/)
 #
 # Each page: layout `page`, title from the first "# H1", right-side TOC sidebar
 # (bootstrap-toc), internal [..](*.md) links rewritten to permalinks, and math/code
 # rendered by WikiRender (see wiki_render.rb, unit-tested separately).
 require_relative 'wiki_render'
+require 'pathname'
 
 module WikiSite
   # source dir (relative to site.source) => { url prefix, display title for the index page }
@@ -49,18 +50,28 @@ module WikiSite
         root = site.in_source_dir(dir)
         next unless File.directory?(root)
 
-        md_files = Dir.glob(File.join(root, '*.md')).sort
+        md_files = Dir.glob(File.join(root, '**', '*.md')).sort
         next if md_files.empty?
 
-        link_map = build_link_map(root, prefix)
+        # Wiki source folders are excluded from Jekyll's normal file copying.
+        # Publish their images explicitly, preserving the source directory paths.
+        Dir.glob(File.join(root, '**', '*')).each do |path|
+          next unless File.file?(path) && path.match?(/\.(png|jpe?g|gif|svg|webp|avif)\z/i)
+
+          relative = Pathname.new(path).relative_path_from(Pathname.new(site.source)).to_s
+          site.static_files << Jekyll::StaticFile.new(site, site.source, File.dirname(relative), File.basename(relative))
+        end
 
         md_files.each do |path|
           base = File.basename(path)
-          stem = base.sub(/\.md\z/i, '')
+          relative = Pathname.new(path).relative_path_from(Pathname.new(root)).to_s
+          stem = relative.sub(/\.md\z/i, '')
           index = base.casecmp('README.md').zero?
-          out_dir   = index ? prefix : "#{prefix}/#{stem}"
-          permalink = index ? "/#{prefix}/" : "/#{prefix}/#{stem}/"
+          slug = index ? File.dirname(relative) : stem
+          out_dir = slug == '.' ? prefix : "#{prefix}/#{slug}"
+          permalink = "/#{out_dir}/"
 
+          link_map = build_link_map(root, prefix, File.dirname(path))
           h1, html = WikiRender.render(File.read(path), link_map)
           # index page uses the configured wiki name; chapters use their own H1
           title = index ? wiki_title : (h1.nil? || h1.empty? ? stem : h1)
@@ -71,19 +82,22 @@ module WikiSite
 
     private
 
-    # filename -> permalink, for rewriting internal links inside the markdown.
+    # Paths relative to the current page -> permalinks or published asset URLs.
     #   *.md          -> /<prefix>/<slug>/  (README -> /<prefix>/)
-    #   other assets  -> /<dir>/<name>      (Jekyll copies them verbatim from the folder)
-    def build_link_map(root, prefix)
+    #   images        -> /<dir>/<path>      (published explicitly above)
+    def build_link_map(root, prefix, page_dir)
       map = {}
       dirname = File.basename(root)
-      Dir.glob(File.join(root, '*')).each do |path|
+      Dir.glob(File.join(root, '**', '*')).each do |path|
         next if File.directory?(path)
         name = File.basename(path)
-        map[name] = if name =~ /\.md\z/i
-                      name.casecmp('README.md').zero? ? "/#{prefix}/" : "/#{prefix}/#{name.sub(/\.md\z/i, '')}/"
+        relative = Pathname.new(path).relative_path_from(Pathname.new(root)).to_s
+        target = Pathname.new(path).relative_path_from(Pathname.new(page_dir)).to_s
+        map[target] = if name =~ /\.md\z/i
+                      slug = name.casecmp('README.md').zero? ? File.dirname(relative) : relative.sub(/\.md\z/i, '')
+                      slug == '.' ? "/#{prefix}/" : "/#{prefix}/#{slug}/"
                     else
-                      "/#{dirname}/#{name}"
+                      "/#{dirname}/#{relative}"
                     end
       end
       map
