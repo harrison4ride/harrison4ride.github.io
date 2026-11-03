@@ -27,10 +27,15 @@ $(document).ready(function () {
     var $myNav = $(navSelector);
     var $wiki = $(".wiki-content");
     if ($wiki.length) {
-      // Wiki questions use a third navigation level, beyond bootstrap-toc's default depth.
+      // Wiki topics and questions can span H1–H4, beyond bootstrap-toc's default depth.
       $myNav.empty().attr("data-toggle", "toc").attr("aria-label", "本页目录").addClass("wiki-toc");
-      var parents = [{ level: 1, $item: $myNav }];
-      $wiki.find("h2, h3, h4").not("[data-toc-skip]").each(function () {
+      var $headings = $wiki.find("h1, h2, h3, h4");
+      if ($wiki.find("h1").length) {
+        // The generator renders the first H1 as the page title outside the article.
+        $headings = $wiki.closest(".post").find(".post-title").add($headings);
+      }
+      var parents = [{ level: 0, $item: $myNav }];
+      $headings.not("[data-toc-skip]").each(function () {
         var level = Toc.helpers.getNavLevel(this);
         while (parents[parents.length - 1].level >= level) {
           parents.pop();
