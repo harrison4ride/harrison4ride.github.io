@@ -2,7 +2,7 @@
 
 [返回目录](../README.md) · [上一篇：机器学习与深度学习](bagu.md) · [下一篇：LLM 训练与并行策略](bagu3.md)
 
-## NLP 基本概念
+## Tokenization and embedding
 
 ### 1. 常见的文本相似度计算方法
 
@@ -15,7 +15,15 @@
 
 ### 2. word2vec 模型
 
- 在 NLP 中，我们希望用一个数学形式表示不同的单词，于是便有了词向量。最初的词向量是 one-hot 词向量，但这种向量维度过大，非常稀疏，且不能反映词与词之间的关系。于是便有了**分布式词向量**，即固定 embedding 的维度，embedding 中的每一个值都是通过计算不同单词的贡献得到的。
+ 在 NLP 中，我们希望用一个数学形式表示不同的单词，于是便有了词向量。
+
+ 最初的词向量是 one-hot 词向量，但这种向量维度过大，非常稀疏，且不能反映词与词之间的关系。
+
+ 于是便有了**分布式词向量**，即固定 embedding 的维度，embedding 中的每一个值都是通过计算不同单词的贡献得到的。
+
+Word2vec have difficulty handling:
+• Rare words
+• New or unseen words
 
  训练 word2vec 模型主要有两种方式：CBOW 和 Skip-Gram。
  - CBOW 是让模型根据某个词前面的 C 个词和之后的 C 个词，预测这个词出现的概率。如图，训练过程其实就是学习这两个矩阵 $W$ 和 $W'$，其中，$W$ 矩阵又被叫做 lookup table，即所有词嵌入向量的词表。
@@ -25,27 +33,35 @@
 
      ![word2vec-skip-gram](imgs/word2vec-skip-gram.jpg)
 
- 为了加快训练速度，word2vec 采用了两种优化方式。
- - Hierarchical Softmax，用霍夫曼树代替神经网络，本质上是将 n 分类变成 log(n) 次二分类。
- - Negative Sampling，由于霍夫曼树中高频词离根结点较近，但是如果中心词是较生僻的词，那么就要消耗很长时间。简要来说就是从负样本中选取一部分来更新，而不是更新全部的权重。
-
-
-2. BPE 依据绝对频次贪心合并子词；
-3. **BERT (WordPiece) 分词优缺点：** 依据语言模型似然度（Likelihood）决定合并
-* **优点：** 完美解决 OOV（未登录词）问题，平衡词表大小与表达能力。
-* **缺点：** 对特定语言（如中文或多语言）敏感，对拼写错误或噪声较脆弱。
-1. **输入长度受限原因：**
-* 算力与显存的平方级爆炸（$O(n^2)$ 复杂度）。
-* 绝对位置编码的外推极限。
-* 推理时 KV Cache 巨大的显存开销。
 
 ### 3. GloVe 模型
 
  GloVe 模型利用了词语的共现频率来计算相关性。首先引入词语的共现矩阵 $X$，其中 $X_{ij}$ 是在 word i 的上下文中 word j 的出现次数，$X_i = \sum_k X_{ik}$ 是出现在 word i 的上下文中所有词的出现次数，则共现概率为 $P_ij = P(j|i) = \frac{X_{ij}}{X_i}$，是word j 出现在 word i 上下文的概率。可以发现，共现概率的比例可以反映两个词的**相关度**。
 
+ ### 4. BPE Byte-Pair Encoding
+
+Starts with small units, usually bytes
+- Repeatedly merges the most frequent adjacent pair in the training corpus
+- Over many merges, common patterns become single subword tokens
+- A useful consequence: frequent words may become one token, while rare words are broken into smaller pieces
+  - computer → [computer]
+  - computerization → [computer, ization]
+  - computerizability → [computer, iz, ability]
+
+### 5. Other Subword Tokenization Methods
+WordPiece (e.g., BERT)
+- Builds subwords based on the informativeness of neighboring units instead of simply frequency
+
+### Embedding
+
+
 ## RNN / LSTM
 
-### 1. 为什么需要 RNN？
+### 1. RNN？
+
+缺点：
+- **长sequence差**
+- 无法并行 **因为后面依赖前面**
 
  循环神经网络（Recurrent Neural Network, RNN）。当给定的数据是序列型数据，如文本、音频等数据时，我们往往希望模型能够学习到给定数据的上下文环境。例如，对于一个句子，序列模型试图从同一个句子前面的单词推导出关系。
 
@@ -167,6 +183,8 @@ $X\in\mathbb R^{\text{Batch Size}\times\text{Seq Len}\times\text{Hidden Dim}}$
 
 > **为什么 attention 用点乘而不是加法？** 计算效率极高，矩阵乘法（$QK^T$）能被 GPU 底层硬件极致加速。
 
+> **Why just KV cache? Why not cache Q?** Queries of previous tokens no longer participate into the computation. So discard them.
+
 ## 5. Transformer
 
  ![transformer](imgs/transformer.jpg)
@@ -240,6 +258,40 @@ $X\in\mathbb R^{\text{Batch Size}\times\text{Seq Len}\times\text{Hidden Dim}}$
     - FFN 计算复杂度为 **$O(n \cdot d^2)$**。
     > **FlashAttention 是否把计算复杂度降到线性** 没有。它用SRAM减少显存读写，避免完整存储注意力矩阵；只加速不降低复杂度。
 
+    > The model has limited ability to dynamically control which features should pass through based on the current input
+    >
+    > -> **Gating Adds Input-Dependent Feature Selection**
+
+## 5.X other attention
+
+### MLA: Compress the KV Cache
+![alt text](image-3.png)
+
+### MQA: All Attention Heads Share One KV
+All attention heads compute their own Q but share the same K and V.
+Intuition:
+- From an IR perspective, Q represents different ways to ask questions about an input and thus need to be diversified. But K and V are about the input itself, which can have a shared
+representation. It is like a shared database with many different kinds of search queries.
+- Even with the same K and V, different heads can still compute different attentions scores with different Qs.
+
+### GQA: A Compromise Between MHA and MQA
+Only keeping one KV reduces the representation flexibility.
+
+Grouped-Query Attention (GQA): Split attention heads into smaller groups and each group share the same K and V across their Qs.
+
+### sparse att
+![alt text](image-4.png)
+
+### Linear attention reformulates attention using a kernel
+![alt text](image-5.png)
+
+Standard softmax attention softmax 𝑄𝐾^𝑇 lets every query form a highly specific distribution over previous tokens
+- Linear attention approximates this with:
+  - Weaker ability to retrieve specific distant tokens
+  - Information loss with a smaller summery (𝑑 × 𝑑 vs. 𝑛 × 𝑛 matrix)
+  - quality can degrade for tasks requiring precise recall
+- So modern LLMs often adopt a hybrid form---a mix of sparse/full attention and linear attention
+
 ## 6. Layer Normalization
 - Batch Normalization 和 Layer Normalization
   - Layer Normalization 是对每一token进行缩放，不依赖batch size, NLP**序列长度不定**
@@ -257,7 +309,12 @@ $X\in\mathbb R^{\text{Batch Size}\times\text{Seq Len}\times\text{Hidden Dim}}$
 
     Post-norm在子层和残差加完之后再norm，更直观，浅层网络容易训练。
 
-> **为什么现在很多模型用 RMSNorm？** RMSNorm 根据特征的均方根进行缩放，通常不减去均值 $\mathrm{RMSNorm}(x) =g\odot\frac{x}{\sqrt{\frac1d\sum_i x_i^2+\epsilon}}$ **相比 LayerNorm，它简化了归一化计算。**
+> **为什么现在很多模型用 RMSNorm？** RMSNorm removes mean-centering and normalizes only by the root mean square
+    >
+    > $\mathrm{RMSNorm}(x) =g\odot\frac{x}{\sqrt{\frac1d\sum_i x_i^2+\epsilon}}$
+    >
+    > **相比 LayerNorm，它简化了归一化计算。**
+
 ## 7. Causal Mask 和 Padding Mask 各解决什么问题？
 
  **The causal mask blocks future positions, while the padding mask blocks artificial padding tokens. Both operate on attention logits before softmax, but they enforce different constraints.**
@@ -343,34 +400,30 @@ Loss 经过输出层、decoder、必要时的 encoder 反向传播，也更新�
 
     总参数量 = 词向量参数 + 12 (层数) * (Multi-head + 前馈网络) = 110M
 
-# Scaling laws：内容、使用方法和启发
+# Scaling laws
 
-Scaling laws 是在特定数据分布、模型族和训练设置下，性能与参数量、数据量、计算量之间的**经验规律**。对语言模型，经典研究通常拟合 held-out next-token cross-entropy；它不是 “模型变大，所有能力都按同一规律提升”。[S1–S2]
-
-一个常见形式是：
+## Kaplan Scaling Laws
 
 $$
 L(N,D)\approx E+\frac{A}{N^\alpha}+\frac{B}{D^\beta},\qquad C\approx 6ND.
 $$
 
-N=参数量，D=训练 token 数，C=训练 FLOPs，E=拟合的渐近 loss 项。6ND 是 dense Transformer 常用粗估，假设和忽略项要记住；长上下文 attention 开销、MoE、不同训练实现可能需要更细的计算模型。
-> a model's cross-entropy loss decreases following a power-law relationship as we increase the parameter count ($N$) and training data volume ($D$).From an engineering standpoint, this gives us two main takeaways. First, model performance is highly predictable, meaning we can run small-scale experiments to accurately forecast the performance of much larger models. Second, we face diminishing returns—as the model gets larger, achieving the same marginal drop in loss requires exponentially more parameters or data.
+N=参数量，D=训练 token 数，C=训练 FLOPs，E=拟合的渐近 loss 项。
 
-> For a standard dense Transformer, the total training compute (in FLOPs, denoted as $C$) is roughly proportional to the product of parameters and training tokens. We typically estimate this using the formula $C \approx 6ND$.This formula highlights a crucial reality: scaling up the model size and scaling up the dataset are equally expensive. Doubling the parameters costs just as much compute as doubling the training tokens.
-- Kaplan 与 Chinchilla 的区别
+> Cross-entropy loss follows smooth power-law relationships with model parameters (N), training tokens (D), and training compute (C).
 
-  - Kaplan 等工作提出 loss 随规模的经验幂律，并研究固定预算下的分配。[S1]
-  - Chinchilla 强调许多大模型相对数据量训练不足；其实验范围内，参数量和 token 数应随预算近似同步增加。[S2]
-  - 典型概括是 \(N_{opt}\propto C^{0.5}\)、\(D_{opt}\propto C^{0.5}\)。**预算翻倍不是参数和数据都翻倍**，而是两者各约乘 sqrt(2)；两者都翻倍约需四倍预算。
-  - “20 tokens per parameter” 是 Chinchilla 附近的经验比例，不是每个模型必须遵守的常数，更不是要把一个小数据集机械重复到 20 倍参数量。
+> Takeaways. 1. model performance is highly predictable, meaning we can run small-scale experiments to accurately forecast the performance of much larger models.
+>
+> (2) As compute increases, spend most of the additional compute on increasing model size, not on training much longer. (Very large model + relatively modest amount of training data)
+>
+## Chinchilla
 
-> Scaling laws describe empirical relationships between model performance and resources such as parameter count, training data, and compute. For language models, the quantity being modeled is often held-out cross-entropy loss.
+Chinchilla 强调许多大模型相对数据量训练不足
 
-> The practical value is resource allocation. Under a fixed training budget, making the model larger is not always the best choice; the model also needs enough data. Chinchilla showed that, in its experimental setting, model size and training tokens should grow at roughly similar rates as compute increases.
+> **model size and training data should grow at roughly the same rate** 典型概括是 $N_{opt}\propto C^{0.5}$ $D_{opt}\propto C^{0.5}$
 
-> I would use small-scale experiments to estimate the trend for my own setting, then choose a model and data budget and validate the prediction at a larger scale. I would also include inference cost if the model will serve many requests.
 
-> For agents, the related question is how to spend test-time compute. More retrieval, candidate solutions, or verification may help, but the gains depend on the task and the verifier. I would measure verified task success against total cost and allocate compute to the current bottleneck, rather than assuming that more parameters or longer reasoning always produce the best result.
+> The practical value is resource allocation.
 
 # LLM 解码
 
@@ -380,11 +433,9 @@ $$
 y_t=\arg\max_y p(y\mid y_{<t},x)
 $$
 
-每步都挑当前概率最大的那个。快、确定、可复现；缺点是每一步只顾眼前，容易陷进重复循环，开放生成时也偏平庸。
+每步都挑当前概率最大的那个。
 
-一个容易忽略的点：**贪心不等于最优**。整句概率最高的序列，未必每一步都取最大值——第一步让一点，后面可能赚回来更多。这正是 beam search 存在的理由。
-
-适合抽取式任务、分类式输出、部分代码补全。
+快、确定、可复现；缺点是每一步只顾眼前，缺少diverse。
 
 ## Temperature
 
@@ -397,8 +448,6 @@ $$
 - $T<1$：分数差被放大，分布更尖，模型更保守（$T\to0$ 就退化成 greedy）。
 - $T=1$：原始分布。
 - $T>1$：分数被压平，长尾 token 更容易被采到，更有创意，也更容易胡说。
-
-注意它调的是**分布形状**，不是「随机不随机」这个开关——$T=0.7$ 依然是随机采样，只是采到冷门 token 的机会小了。
 
 ## Top-K Sampling
 
@@ -428,10 +477,10 @@ $$
 
 ## 目录
 
-| 部分 | 内容 |
-| --- | --- |
-| [第一部分（一）：机器学习与深度学习](bagu.md) | ML 基础、评估指标、经典算法、神经网络与优化 |
-| [第一部分（二）：NLP、Transformer 与解码](bagu2.md) | 词向量、RNN / LSTM、Attention、Transformer、Scaling laws 与解码 |
-| [第一部分（三）：LLM 训练与并行策略](bagu3.md) | 预训练、SFT、RLHF、DPO、GRPO、蒸馏、合成数据与并行训练 |
-| [第二部分：ML Coding 基础](../11-ml-coding-basics.md) | CodeSignal、NumPy、Pandas、PyTorch、纯 Python 矩阵运算 |
-| [第三部分：ML Coding 专题](../12-ml-coding.md) | Transformer、经典机器学习、神经网络层与 NLP 手写实现 |
+| 部分                                                  | 内容                                                            |
+| ----------------------------------------------------- | --------------------------------------------------------------- |
+| [第一部分（一）：机器学习与深度学习](bagu.md)         | ML 基础、评估指标、经典算法、神经网络与优化                     |
+| [第一部分（二）：NLP、Transformer 与解码](bagu2.md)   | 词向量、RNN / LSTM、Attention、Transformer、Scaling laws 与解码 |
+| [第一部分（三）：LLM 训练与并行策略](bagu3.md)        | 预训练、SFT、RLHF、DPO、GRPO、蒸馏、合成数据与并行训练          |
+| [第二部分：ML Coding 基础](../11-ml-coding-basics.md) | CodeSignal、NumPy、Pandas、PyTorch、纯 Python 矩阵运算          |
+| [第三部分：ML Coding 专题](../12-ml-coding.md)        | Transformer、经典机器学习、神经网络层与 NLP 手写实现            |

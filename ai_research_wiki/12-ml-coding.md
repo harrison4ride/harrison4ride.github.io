@@ -387,196 +387,98 @@ if __name__ == "__main__":
 
 ---
 
-## 1.3 解码：Greedy、Beam Search 与采样
+## 12.1 分类指标：Precision、Recall、F1 与 AUC
 
-训练时 decoder 一次看到整句答案（teacher forcing）；推理时只能自回归地一个一个生成：源句先 `encode` 一次得到 `memory`，再从 `[BOS]` 开始，每步把已生成的前缀喂给 `decode`，只取最后一个位置的 logits `(B, V)` 挑出下一个 token 拼到末尾，直到 EOS 或 `max_len`。各种方法只在「怎么挑」上不同：
-
-| 方法        | 怎么挑下一个 token                     | 输出 | 常见用途                              |
-| ----------- | -------------------------------------- | ---- | ------------------------------------- |
-| Greedy      | argmax                                 | 确定 | 抽取、代码、评测                      |
-| Beam Search | 保留累计 log-prob 最高的 k 条路径      | 确定 | 翻译、摘要、语音识别（k 常取 4 到 5） |
-| 采样        | 温度缩放、top-k / top-p 截断后按概率抽 | 随机 | 对话、创意写作                        |
-
-Beam 的分数是累计 log-prob（连乘变连加，防止下溢），排名时除以长度惩罚 $L^{\alpha}$（$L$ 是已生成的长度）：
+### Precision、Recall、F1
 
 $$
-\text{score}(y_{1:L})=\sum_{t=1}^{L}\log p(y_t\mid y_{<t},x),\qquad \text{rank}=\frac{\text{score}}{L^{\alpha}}
+\text{Precision}=\frac{TP}{TP+FP},\qquad
+\text{Recall}=\frac{TP}{TP+FN},\qquad
+F_1=\frac{2PR}{P+R}
 $$
 
-采样先做温度缩放 $p_i\propto\exp(z_i/T)$（$T<1$ 更尖，$T>1$ 更平），再截断：**Top-K** 只留最大的 K 个；**Top-P**（nucleus）按概率降序，取累计概率刚好达到 p 的最小集合，候选数随分布自动伸缩。
-
-### 实现
-
-下面的函数只依赖第 1 节 `Transformer` 的两个方法：`memory = model.encode(src, src_mask)` 和 `logits = model.decode(tgt, memory, src_mask, tgt_mask)`，第 1 节的模型可以直接传进来。`greedy_decode` 是批量版：每行生成 EOS 的时间不同，用 `(B,)` 的布尔向量 `finished` 记录，结束的行之后只补 PAD。把 `pick_fn` 换成采样函数，同一个循环就变成采样解码。
+Precision（查准率）是预测为正的样本里真正为正的比例，管**别误报**；Recall（查全率）是真正的正样本里被抓到的比例，管**别漏报**。阈值调低，recall 升、precision 降；调高则相反。F1 是两者的调和平均，对偏科更狠：0.9 和 0.1 的算术平均是 0.5，F1 只有 0.18。
 
 ```python
-from typing import Callable, Dict, List, Optional
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
+from typing import List, Tuple
 
 
-@torch.no_grad()
-def greedy_decode(model: nn.Module, src: torch.Tensor, max_len: int, bos_id: int, eos_id: int,
-                  pad_id: int = 0, pick_fn: Optional[Callable[[torch.Tensor], torch.Tensor]] = None
-                  ) -> torch.Tensor:
-    """
-    Args:
-        src: (B, T_src)；pick_fn: logits (B, V) -> token (B,)，默认 argmax（greedy）
-    Returns:
-        (B, 1 + n)，以 BOS 开头，n <= max_len；每行 EOS 之后补 pad_id
-    """
-    model.eval()                                                          # 关掉 dropout
-    src_mask = (src != pad_id).unsqueeze(1).unsqueeze(2)                  # (B, 1, 1, T_src)
-    memory = model.encode(src, src_mask)                                  # 1. 源句只编码一次，(B, T_src, C)
-    ys = torch.full((src.size(0), 1), bos_id, dtype=torch.long, device=src.device)   # (B, 1)
-    finished = torch.zeros(src.size(0), dtype=torch.bool, device=src.device)        # (B,)
-    for _ in range(max_len):
-        tgt_mask = torch.tril(torch.ones(ys.size(1), ys.size(1), device=src.device))  # (T, T) 因果
-        logits = model.decode(ys, memory, src_mask, tgt_mask)[:, -1, :]   # 2. 只取最后一个位置，(B, V)
-        next_token = logits.argmax(dim=-1) if pick_fn is None else pick_fn(logits)   # (B,)
-        next_token = next_token.masked_fill(finished, pad_id)             # 3. 已结束的行只补 PAD
-        ys = torch.cat([ys, next_token.unsqueeze(1)], dim=1)              # (B, T + 1)
-        finished = finished | (next_token == eos_id)                      # 4. 用 | 累积，PAD 不会把它改回去
-        if finished.all():
-            break
-    return ys
-
-
-def filter_logits(logits: torch.Tensor, temperature: float = 1.0, top_k: int = 0,
-                  top_p: float = 1.0) -> torch.Tensor:
-    """logits: (B, V) -> (B, V)；被过滤的位置置 -inf，softmax 后概率正好是 0，剩下的自动重新归一化"""
-    logits = logits / temperature                                         # 1. 温度
-    if top_k > 0:                                                         # 2. top-k：比每行第 k 大还小的屏蔽
-        kth = torch.topk(logits, min(top_k, logits.size(-1)), dim=-1).values[:, -1:]   # (B, 1)
-        logits = logits.masked_fill(logits < kth, float("-inf"))
-    if top_p < 1.0:                                                       # 3. top-p：降序排序后算累计概率
-        sorted_logits, sorted_idx = torch.sort(logits, dim=-1, descending=True)        # (B, V)
-        probs = F.softmax(sorted_logits, dim=-1)
-        sorted_remove = (probs.cumsum(dim=-1) - probs) >= top_p           # 前面已凑够 p 的都多余；第 1 个永远保留
-        remove = sorted_remove.scatter(1, sorted_idx, sorted_remove)      # 排序后的顺序 -> 原顺序
-        logits = logits.masked_fill(remove, float("-inf"))
-    return logits
-
-
-def sample_next(logits: torch.Tensor, temperature: float = 1.0, top_k: int = 0, top_p: float = 1.0,
-                generator: Optional[torch.Generator] = None) -> torch.Tensor:
-    """logits: (B, V) -> (B,)；temperature = 0 是 greedy 的极限，单独处理避免除零"""
-    if temperature == 0:
-        return logits.argmax(dim=-1)
-    probs = F.softmax(filter_logits(logits, temperature, top_k, top_p), dim=-1)    # (B, V)
-    return torch.multinomial(probs, num_samples=1, generator=generator).squeeze(-1)
-
-
-@torch.no_grad()
-def beam_search(model: nn.Module, src: torch.Tensor, max_len: int, bos_id: int, eos_id: int,
-                beam_width: int = 3, alpha: float = 0.0, pad_id: int = 0) -> Dict:
-    """
-    Args:
-        src: (1, T_src)，一条源句；alpha: 长度惩罚，排名用 score / L ** alpha
-    Returns:
-        {"tokens": [BOS, ...], "score": 累计 log-prob}
-    """
-    model.eval()
-    src_mask = (src != pad_id).unsqueeze(1).unsqueeze(2)                  # (1, 1, 1, T_src)
-    memory = model.encode(src, src_mask)                                  # (1, T_src, C)
-
-    def rank(beam: Dict) -> float:
-        return beam["score"] / max(len(beam["tokens"]) - 1, 1) ** alpha
-
-    beams = [{"tokens": [bos_id], "score": 0.0}]
-    for _ in range(max_len):
-        candidates = []
-        for beam in beams:
-            if beam["tokens"][-1] == eos_id:      # 1. 已结束：原样带到下一轮，用自己的分数继续竞争
-                candidates.append(beam)
-                continue
-            tgt = torch.tensor([beam["tokens"]], device=src.device)                       # (1, T)
-            tgt_mask = torch.tril(torch.ones(tgt.size(1), tgt.size(1), device=src.device))
-            log_probs = F.log_softmax(model.decode(tgt, memory, src_mask, tgt_mask)[0, -1], dim=-1)  # (V,)
-            top_lp, top_ids = torch.topk(log_probs, min(beam_width, log_probs.numel()))  # 2. 每条只展开前 k 个
-            for lp, tok in zip(top_lp.tolist(), top_ids.tolist()):
-                candidates.append({"tokens": beam["tokens"] + [tok], "score": beam["score"] + lp})
-        beams = sorted(candidates, key=rank, reverse=True)[:beam_width]  # 3. 全局剪枝回 k 条
-        if all(b["tokens"][-1] == eos_id for b in beams):                 # 4. 全部结束就停
-            break
-    return beams[0]                                                       # 已按 rank 降序
+def precision_recall_f1(y_true: List[int], y_pred: List[int]) -> Tuple[float, float, float]:
+    """二分类，y_true / y_pred 是长度 n 的 0/1 列表。分母为 0 时返回 0（同 sklearn 的 zero_division=0）。"""
+    # 1. 数混淆矩阵里的 TP、FP、FN
+    tp = sum(1 for t, p in zip(y_true, y_pred) if t == 1 and p == 1)
+    fp = sum(1 for t, p in zip(y_true, y_pred) if t == 0 and p == 1)
+    fn = sum(1 for t, p in zip(y_true, y_pred) if t == 1 and p == 0)
+    # 2. 一个正类都没预测出来，或者没有正样本时，分母为 0，显式返回 0
+    precision = tp / (tp + fp) if tp + fp > 0 else 0.0
+    recall = tp / (tp + fn) if tp + fn > 0 else 0.0
+    f1 = 2 * precision * recall / (precision + recall) if precision + recall > 0 else 0.0
+    return precision, recall, f1
 ```
 
-采样解码的调用方式：`greedy_decode(model, src, 20, bos_id, eos_id, pick_fn=lambda z: sample_next(z, 0.8, top_k=50, top_p=0.9))`。
+多分类：**macro** 对每个类别 c 用 `y == c` 做一次 one-vs-rest，算出 F1 再取平均，小类和大类等权；**micro** 先把所有类别的 TP、FP、FN 加总再算，被大类主导，单标签多分类下 micro-F1 就等于 accuracy。关心稀有类就看 macro。
 
-### 自测
+### ROC-AUC
 
-为了本节能单独运行，用一个只有 `encode` / `decode` 两个方法的随机小模型代替第 1 节的 `Transformer`：decoder 状态是前缀 embedding 的累加和，位置 t 只依赖不晚于 t 的 token，效果和因果 mask 相同。约定 PAD = 0、BOS = 1、EOS = 2。
+ROC 曲线把阈值从高到低扫一遍，横轴 $\text{FPR}=FP/N$，纵轴 $\text{TPR}=TP/P$（就是 recall），$P$、$N$ 是正、负样本数，AUC 是曲线下面积。面试最常考它的概率含义：随机抽一个正样本和一个负样本，正样本分数更高的概率，平局算一半：
+
+$$
+\text{AUC}=\frac{1}{PN}\sum_{i\in\text{pos}}\sum_{j\in\text{neg}}\Big(\mathbf{1}[s_i>s_j]+\tfrac12\,\mathbf{1}[s_i=s_j]\Big)
+$$
+
+AUC 不需要选阈值，而且只看排序：分数做任何严格递增变换（sigmoid、log、乘正数），AUC 都不变，所以拿 logits 和拿概率算结果一样。**先写暴力版**：照公式数对，$O(PN)$，最不容易错，之后拿它当对拍的标准答案。
 
 ```python
-import itertools
+def solution(labels: list, scores: list) -> float:
+    """labels: 长度 n，1/True 为正类；scores: 长度 n，概率或 logits 都行。返回 [0, 1] 的 AUC。"""
+    # 1. 按标签分成两堆；if y 同时兼容 1/0 和 True/False
+    pos = [s for y, s in zip(labels, scores) if y]
+    neg = [s for y, s in zip(labels, scores) if not y]
+    if not pos or not neg:      # 只有一类时 AUC 无定义：报错，别偷偷返回 0.5
+        raise ValueError("only one class present, AUC is undefined")
+    # 2. 每个（正, 负）对：正样本分高记 1，相等记 0.5
+    wins = 0.0
+    for p in pos:
+        for q in neg:
+            if p > q:
+                wins += 1.0
+            elif p == q:
+                wins += 0.5
+    # 3. 除以总对数 P * N
+    return wins / (len(pos) * len(neg))
 
 
-class StubSeq2Seq(nn.Module):
-    """只为测试解码：随机初始化，接口同第 1 节的 Transformer，mask 参数接收但不用"""
-
-    def __init__(self, vocab_size: int = 8, d_model: int = 16):
-        super().__init__()
-        self.embed = nn.Embedding(vocab_size, d_model)
-        self.fc_out = nn.Linear(d_model, vocab_size)
-
-    def encode(self, src, src_mask):
-        return self.embed(src)                                                    # (B, T_src, C)
-
-    def decode(self, tgt, memory, src_mask, tgt_mask):
-        h = self.embed(tgt).cumsum(dim=1) + memory.mean(dim=1, keepdim=True)     # (B, T_tgt, C)
-        logits = self.fc_out(torch.tanh(h))                                       # (B, T_tgt, V)
-        return logits.index_fill(-1, torch.tensor([0, 1]), -1e9)                  # 不生成 PAD、BOS
-
-
-def test_decoding() -> None:
-    torch.manual_seed(45)
-    model, bos, eos = StubSeq2Seq(), 1, 2
-    src = torch.tensor([[3, 4, 5], [6, 7, 0]])                                    # (B=2, T_src=3)
-    out = greedy_decode(model, src, 6, bos, eos)
-    print(out.tolist())
-    # 1. 采样时 top_k = 1 等于 greedy；top-p 小例子：p = 0.7 只留 0.5 和 0.3
-    assert torch.equal(greedy_decode(model, src, 6, bos, eos, pick_fn=lambda z: sample_next(z, top_k=1)), out)
-    toy = torch.log(torch.tensor([[0.15, 0.5, 0.05, 0.3]]))
-    assert torch.isfinite(filter_logits(toy, top_p=0.7)).tolist() == [[False, True, False, True]]
-    # 2. beam：宽度 1 等于 greedy；宽度 64 时前两步一条都不剪（8 条、7 * 8 + 1 条），结果等于暴力枚举
-    src1, memory = src[:1], model.encode(src[:1], None)
-    beams = {w: beam_search(model, src1, 3, bos, eos, beam_width=w) for w in [1, 3, 64]}
-    for w, beam in beams.items():
-        print(w, beam["tokens"], round(beam["score"], 4))
-    assert beams[1]["tokens"] == greedy_decode(model, src1, 3, bos, eos)[0].tolist()
-
-    def full_score(tokens: List[int]) -> float:   # 一次完整前向给整条序列打分，和 beam 的逐步累加相互独立
-        lp = F.log_softmax(model.decode(torch.tensor([tokens]), memory, None, None)[0], dim=-1)   # (T, V)
-        return sum(lp[t, tokens[t + 1]].item() for t in range(len(tokens) - 1))
-    conts = {c[:c.index(eos) + 1] if eos in c else c for c in itertools.product(range(8), repeat=3)}
-    best = max(([bos] + list(c) for c in conts), key=full_score)
-    assert beams[64]["tokens"] == best and abs(beams[64]["score"] - full_score(best)) < 1e-5
-    print(beam_search(model, src1, 3, bos, eos, beam_width=64, alpha=1.0)["tokens"])
-    print("all tests passed")
-
-
-if __name__ == "__main__":
-    test_decoding()
-    # [[1, 6, 6, 6, 2, 0, 0], [1, 6, 6, 6, 6, 4, 2]]
-    # 1 [1, 6, 6, 6] -4.4276
-    # 3 [1, 7, 4, 4] -3.3934
-    # 64 [1, 2] -2.0994
-    # [1, 7, 4, 4]
-    # all tests passed
+print(solution([1, 1, 0, 1, 0, 0], [0.9, 0.8, 0.8, 0.4, 0.3, 0.1]))   # 0.8333333333333334
 ```
 
-第 1 行在第 4 步生成 EOS，之后只补 PAD。宽度 1 就是 greedy，第一步选了 6 就只能沿着它走；宽度 3 留住了第一步只排第 3 的 7，总分反而更高；宽度 64 找到了全局最优 `[1, 2]`，也就是直接输出 EOS。累计 log-prob 每多一个 token 就多加一个负数，所以不加长度惩罚会偏爱短句；`alpha=1.0` 之后换成了 `[1, 7, 4, 4]`。
+手算：9 对里 0.9 赢 3 对；0.8 赢 2 对，和负样本 0.8 打平记 0.5；0.4 赢 2 对。合计 7.5 / 9。
 
-### 关键追问
+**面试版：排名公式（Mann-Whitney U），O(n log n)。** 所有样本按分数升序排名（最小的是第 1 名），$R_+$ 是正样本的名次之和，则 $\text{AUC}=\big(R_+-P(P+1)/2\big)/(PN)$。没有平局时，正样本的名次 = 排在它下面的负样本数 + 下面的正样本数 + 1；对所有正样本求和，后两项合起来正好是 $1+2+\cdots+P=P(P+1)/2$，减掉它就只剩「赢的对数」。有平局时，同分的一组都给**平均名次**，相当于组内每个（正, 负）对各记 0.5。
 
-- **KV Cache 是什么，占多少显存？** 因果 mask 下旧位置的 K、V 不会再变，所以每层把它们缓存起来，每步只为新 token 算 $q,k,v$ 并把 $k,v$ 拼到缓存末尾，不再重算整个前缀；cross-attention 的 K、V 来自 `memory`，整段生成只算一次。每条序列的缓存是 $2\times n_{\text{layers}}\times n_{\text{kv}}\times d_{\text{head}}\times T\times\text{bytes}$（2 是 K 和 V），Llama-3-8B（32 层、8 个 KV 头、$d_{\text{head}}=128$、fp16）每个 token 占 $2\times32\times8\times128\times2$ 字节，即 128 KiB。
-- **重复惩罚怎么做？** CTRL 论文把已出现过的 token 的 logit 除以 $\theta$（$\theta\approx1.2$），HuggingFace 的实现补了一条：logit 为负时改成乘以 $\theta$，否则负 logit 反而变大。OpenAI API 的 frequency / presence penalty 用减法：$z_i\leftarrow z_i-\alpha_f c_i-\alpha_p\mathbf{1}[c_i>0]$，$c_i$ 是已出现次数。
-- **为什么要长度惩罚？Beam Search 保证最优吗？** log-prob 恒为负，越长分越低，不加惩罚偏爱短句（上面宽度 64 的结果就是空输出），常用 $\text{score}/L^{\alpha}$，$\alpha$ 取 0.6 到 1.0。不保证最优：每步只留 k 条，可能剪掉「当下分低、后面翻盘」的路径；$k=1$ 就是 greedy，每步复杂度 $O(kV)$。
-- **Top-K 和 Top-P 怎么选，温度趋于 0 会怎样？** Top-K 的 K 固定，分布尖时放进垃圾、分布平时砍掉合理选项；Top-P 的候选数随分布伸缩。工业实现常一起用，顺序是温度 → top-k → top-p → softmax → 采样；$T\to0$ 退化成 greedy，代码里要特判防除零。
-- **开放式生成为什么不用 beam search？** 概率最高的序列往往是最常见、最平淡的说法，还容易复读，所以对话、写作改用 top-p 采样；翻译的输出被源句约束，beam search 仍然好用。批量实现时把 B 个样本的 k 条 beam 摊平成 `(B * k, T)` 一起前向，带 KV Cache 时要按父 beam 的下标用 `index_select` 重排缓存。
+```python
+def auc_rank(labels: list, scores: list) -> float:
+    """排名公式，纯 Python。labels / scores 同 solution。时间 O(n log n)。"""
+    n, n_pos = len(scores), sum(1 for y in labels if y)
+    n_neg = n - n_pos
+    if n_pos == 0 or n_neg == 0:
+        raise ValueError("only one class present, AUC is undefined")
+    order = sorted(range(n), key=lambda i: scores[i])     # 1. 按分数升序排下标
+    # 2. 同分组 order[i..j] 占名次 i+1 .. j+1，统一给平均名次
+    ranks = [0.0] * n
+    i = 0
+    while i < n:
+        j = i
+        while j + 1 < n and scores[order[j + 1]] == scores[order[i]]:
+            j += 1
+        for k in range(i, j + 1):
+            ranks[order[k]] = (i + j) / 2 + 1
+        i = j + 1
+    # 3. 正样本名次和减去 P(P+1)/2 得到赢的对数，再除以 P * N
+    rank_sum = sum(r for r, y in zip(ranks, labels) if y)
+    return (rank_sum - n_pos * (n_pos + 1) / 2) / (n_pos * n_neg)
+```
+
+平局必须按 0.5 记：如果同分样本按出现顺序拿名次，4 个同分样本（2 正 2 负）会随顺序算出 0.25 或 0.75，正确答案是 0.5。也可以先画 ROC 曲线（同分样本合成一个阈值点）再用梯形公式求面积，结果一样。数据大到无法全量排序时，把分数分进固定个数的桶、只累计每个桶的正负样本数，能 $O(n)$ 近似（`tf.keras.metrics.AUC` 默认 200 个阈值）。
 
 ---
 
@@ -944,20 +846,6 @@ def cosine_similarity_matrix(A: np.ndarray, B: np.ndarray, eps: float = 1e-8) ->
     return A_unit @ B_unit.T
 ```
 
-### 自测
-
-```python
-if __name__ == "__main__":
-    from sklearn.metrics.pairwise import cosine_similarity
-
-    rng = np.random.default_rng(0)
-    A, B = rng.normal(size=(4, 8)), rng.normal(size=(3, 8))
-    S = cosine_similarity_matrix(A, B)
-    assert S.shape == (4, 3) and np.allclose(S, cosine_similarity(A, B))
-    assert np.allclose(np.diag(cosine_similarity_matrix(A, 5 * A)), 1.0)    # 只看方向，不看长度
-    assert np.allclose(cosine_similarity_matrix(np.zeros((1, 8)), B), 0.0)  # 零向量得到 0，不出 nan
-    print("all tests passed")
-```
 
 ### 关键追问
 
@@ -965,158 +853,6 @@ if __name__ == "__main__":
 - **批量为什么先归一化再矩阵乘？** 归一化只要 $O((n+m)d)$，之后一次矩阵乘交给 BLAS 算完全部 $n\times m$ 对；逐对的 Python 循环要调用 $nm$ 次，慢几个数量级。
 - **余弦相似度是距离吗？** 它越大越相似，方向和距离相反。$1-\cos$ 常叫余弦距离，但它不满足三角不等式，不是严格的度量。
 - **什么时候不该用？** 模长本身有意义时（词频强度、推荐里的置信度），归一化会把这部分信息丢掉。
-
----
-
-## 6.1 分类指标：Precision、Recall、F1 与 AUC
-
-### Precision、Recall、F1
-
-$$
-\text{Precision}=\frac{TP}{TP+FP},\qquad
-\text{Recall}=\frac{TP}{TP+FN},\qquad
-F_1=\frac{2PR}{P+R}
-$$
-
-Precision（查准率）是预测为正的样本里真正为正的比例，管**别误报**；Recall（查全率）是真正的正样本里被抓到的比例，管**别漏报**。阈值调低，recall 升、precision 降；调高则相反。F1 是两者的调和平均，对偏科更狠：0.9 和 0.1 的算术平均是 0.5，F1 只有 0.18。
-
-```python
-from typing import List, Tuple
-
-
-def precision_recall_f1(y_true: List[int], y_pred: List[int]) -> Tuple[float, float, float]:
-    """二分类，y_true / y_pred 是长度 n 的 0/1 列表。分母为 0 时返回 0（同 sklearn 的 zero_division=0）。"""
-    # 1. 数混淆矩阵里的 TP、FP、FN
-    tp = sum(1 for t, p in zip(y_true, y_pred) if t == 1 and p == 1)
-    fp = sum(1 for t, p in zip(y_true, y_pred) if t == 0 and p == 1)
-    fn = sum(1 for t, p in zip(y_true, y_pred) if t == 1 and p == 0)
-    # 2. 一个正类都没预测出来，或者没有正样本时，分母为 0，显式返回 0
-    precision = tp / (tp + fp) if tp + fp > 0 else 0.0
-    recall = tp / (tp + fn) if tp + fn > 0 else 0.0
-    f1 = 2 * precision * recall / (precision + recall) if precision + recall > 0 else 0.0
-    return precision, recall, f1
-```
-
-多分类：**macro** 对每个类别 c 用 `y == c` 做一次 one-vs-rest，算出 F1 再取平均，小类和大类等权；**micro** 先把所有类别的 TP、FP、FN 加总再算，被大类主导，单标签多分类下 micro-F1 就等于 accuracy。关心稀有类就看 macro。
-
-### ROC-AUC
-
-ROC 曲线把阈值从高到低扫一遍，横轴 $\text{FPR}=FP/N$，纵轴 $\text{TPR}=TP/P$（就是 recall），$P$、$N$ 是正、负样本数，AUC 是曲线下面积。面试最常考它的概率含义：随机抽一个正样本和一个负样本，正样本分数更高的概率，平局算一半：
-
-$$
-\text{AUC}=\frac{1}{PN}\sum_{i\in\text{pos}}\sum_{j\in\text{neg}}\Big(\mathbf{1}[s_i>s_j]+\tfrac12\,\mathbf{1}[s_i=s_j]\Big)
-$$
-
-AUC 不需要选阈值，而且只看排序：分数做任何严格递增变换（sigmoid、log、乘正数），AUC 都不变，所以拿 logits 和拿概率算结果一样。**先写暴力版**：照公式数对，$O(PN)$，最不容易错，之后拿它当对拍的标准答案。
-
-```python
-def solution(labels: list, scores: list) -> float:
-    """labels: 长度 n，1/True 为正类；scores: 长度 n，概率或 logits 都行。返回 [0, 1] 的 AUC。"""
-    # 1. 按标签分成两堆；if y 同时兼容 1/0 和 True/False
-    pos = [s for y, s in zip(labels, scores) if y]
-    neg = [s for y, s in zip(labels, scores) if not y]
-    if not pos or not neg:      # 只有一类时 AUC 无定义：报错，别偷偷返回 0.5
-        raise ValueError("only one class present, AUC is undefined")
-    # 2. 每个（正, 负）对：正样本分高记 1，相等记 0.5
-    wins = 0.0
-    for p in pos:
-        for q in neg:
-            if p > q:
-                wins += 1.0
-            elif p == q:
-                wins += 0.5
-    # 3. 除以总对数 P * N
-    return wins / (len(pos) * len(neg))
-
-
-print(solution([1, 1, 0, 1, 0, 0], [0.9, 0.8, 0.8, 0.4, 0.3, 0.1]))   # 0.8333333333333334
-```
-
-手算：9 对里 0.9 赢 3 对；0.8 赢 2 对，和负样本 0.8 打平记 0.5；0.4 赢 2 对。合计 7.5 / 9。
-
-**面试版：排名公式（Mann-Whitney U），O(n log n)。** 所有样本按分数升序排名（最小的是第 1 名），$R_+$ 是正样本的名次之和，则 $\text{AUC}=\big(R_+-P(P+1)/2\big)/(PN)$。没有平局时，正样本的名次 = 排在它下面的负样本数 + 下面的正样本数 + 1；对所有正样本求和，后两项合起来正好是 $1+2+\cdots+P=P(P+1)/2$，减掉它就只剩「赢的对数」。有平局时，同分的一组都给**平均名次**，相当于组内每个（正, 负）对各记 0.5。
-
-```python
-def auc_rank(labels: list, scores: list) -> float:
-    """排名公式，纯 Python。labels / scores 同 solution。时间 O(n log n)。"""
-    n, n_pos = len(scores), sum(1 for y in labels if y)
-    n_neg = n - n_pos
-    if n_pos == 0 or n_neg == 0:
-        raise ValueError("only one class present, AUC is undefined")
-    order = sorted(range(n), key=lambda i: scores[i])     # 1. 按分数升序排下标
-    # 2. 同分组 order[i..j] 占名次 i+1 .. j+1，统一给平均名次
-    ranks = [0.0] * n
-    i = 0
-    while i < n:
-        j = i
-        while j + 1 < n and scores[order[j + 1]] == scores[order[i]]:
-            j += 1
-        for k in range(i, j + 1):
-            ranks[order[k]] = (i + j) / 2 + 1
-        i = j + 1
-    # 3. 正样本名次和减去 P(P+1)/2 得到赢的对数，再除以 P * N
-    rank_sum = sum(r for r, y in zip(ranks, labels) if y)
-    return (rank_sum - n_pos * (n_pos + 1) / 2) / (n_pos * n_neg)
-```
-
-平局必须按 0.5 记：如果同分样本按出现顺序拿名次，4 个同分样本（2 正 2 负）会随顺序算出 0.25 或 0.75，正确答案是 0.5。也可以先画 ROC 曲线（同分样本合成一个阈值点）再用梯形公式求面积，结果一样。数据大到无法全量排序时，把分数分进固定个数的桶、只累计每个桶的正负样本数，能 $O(n)$ 近似（`tf.keras.metrics.AUC` 默认 200 个阈值）。
-
-### GAUC（推荐 / 广告常考）
-
-全局 AUC 会拿用户 A 的正样本和用户 B 的负样本比，可线上排序只发生在同一个用户的候选之间。GAUC 先对每个用户单独算 AUC，再按曝光数（也有按点击数）加权平均，只有一类样本的用户跳过：
-
-$$
-\text{GAUC}=\frac{\sum_u w_u\,\text{AUC}_u}{\sum_u w_u}
-$$
-
-```python
-def gauc(user_ids: list, labels: List[int], scores: List[float]) -> float:
-    """按曝光数加权；用上面的 auc_rank。"""
-    groups = {}                                         # 1. 用户 -> 样本下标
-    for i, u in enumerate(user_ids):
-        groups.setdefault(u, []).append(i)
-    num, den = 0.0, 0.0
-    for idx in groups.values():
-        y = [labels[i] for i in idx]
-        if 0 < sum(y) < len(y):                         # 2. 两类都有才算
-            num += len(idx) * auc_rank(y, [scores[i] for i in idx])   # 3. 权重 = 曝光数
-            den += len(idx)
-    return num / den
-
-
-users = ["a"] * 4 + ["b"] * 4 + ["c"] * 2
-labels = [1, 0, 1, 0, 0, 1, 0, 0, 0, 0]                # 用户 c 没有点击，跳过
-scores = [0.8, 0.9, 0.7, 0.6, 0.3, 0.2, 0.1, 0.4, 0.5, 0.35]
-print(auc_rank(labels, scores), gauc(users, labels, scores))   # 0.6190476190476191 0.41666666666666663
-```
-
-全局 AUC 0.619 看着还行，可用户 a、b 各自只有 0.5 和 0.3333：模型只学会了「用户 a 的分数整体偏高」。
-
-### 自测
-
-```python
-if __name__ == "__main__":
-    import random
-    from sklearn.metrics import precision_recall_fscore_support, roc_auc_score
-    random.seed(0)
-    for _ in range(200):
-        n = random.randint(2, 30)
-        y = [0, 1] + [random.randint(0, 1) for _ in range(n - 2)]   # 保证两类都在
-        s = [random.randint(0, 4) / 4 for _ in range(n)]             # 只有 5 种分数，平局很多
-        pred = [int(v >= 0.5) for v in s]
-        ref = precision_recall_fscore_support(y, pred, average="binary", zero_division=0)[:3]
-        assert all(abs(a - b) < 1e-12 for a, b in zip(precision_recall_f1(y, pred), ref))
-        assert all(abs(f(y, s) - roc_auc_score(y, s)) < 1e-12 for f in (solution, auc_rank))
-    print("all tests passed")
-```
-
-### 关键追问
-
-- **类别不平衡时为什么看 AUC，不看 accuracy？** 1% 正例时全判负就有 99% accuracy，recall 却是 0。AUC 的 TPR、FPR 各在本类内部归一化，正负比例变了曲线不变，常数分数恰好是 0.5。
-- **precision 和 recall 谁更重要？** 看错误的代价：垃圾邮件过滤怕误杀正常邮件，重 precision；欺诈识别、疾病筛查怕漏，重 recall。也可以用 $F_\beta$，$\beta>1$ 偏 recall。
-- **ROC-AUC 和 PR-AUC 怎么选？** 负样本极多时 FPR 的分母 $N$ 很大，多出一堆误报 FPR 也几乎不动，ROC-AUC 偏乐观。precision 直接受误报影响，所以 PR-AUC 对不平衡更敏感，随机模型的 PR-AUC 约等于正例比例。
-- **AUC 高，概率就准吗？** 不一定：AUC 只看排序，把所有概率除以 2，AUC 不变，校准却全错了。CTR 预估要拿概率出价，还得看 logloss 和校准。
-- **能直接拿 AUC 当 loss 吗？** 不能，它由指示函数组成，几乎处处梯度为 0。常用可导的 pairwise 替代：对每个（正, 负）对最小化 $-\log\sigma(s_i-s_j)$，即 RankNet / BPR loss。
 
 ---
 
@@ -1267,28 +1003,6 @@ class BinaryFocalLoss(nn.Module):
         return reduce_loss(loss, self.reduction)
 ```
 
-#### 4. InfoNCE / CLIP 对比损失
-
-一个 batch 里有 $N$ 对（图, 文），第 $i$ 张图的正样本是第 $i$ 段文字，其余 $N-1$ 段都当负样本（in-batch negatives），所以对比学习通常要大 batch。L2 归一化后两两点积再除以温度 τ，每一行就是一个 $N$ 分类问题，答案在对角线上，所以 label 是 `arange(N)`；按列算就是对转置再调一次。τ 越小分布越尖，梯度越集中在最难的负样本上（CLIP 把它做成可学习参数，初始 0.07）：
-
-$$
-s_{ij}=\frac{\hat u_i^\top\hat v_j}{\tau},\qquad \mathcal L_{\text{img}}=\frac1N\sum_{i}-\log\frac{e^{s_{ii}}}{\sum_{j}e^{s_{ij}}},\qquad \mathcal L=\frac12\big(\mathcal L_{\text{img}}+\mathcal L_{\text{txt}}\big)
-$$
-
-```python
-def clip_loss(img_emb: torch.Tensor, txt_emb: torch.Tensor, temperature: float = 0.07) -> torch.Tensor:
-    """img_emb, txt_emb: (N, D)，第 i 行互为正样本对。返回两个方向的平均 loss（标量）"""
-    img = F.normalize(img_emb, dim=-1)                       # 1. (N, D) L2 归一化，点积 = cosine
-    txt = F.normalize(txt_emb, dim=-1)                       #    (N, D)
-    sim = img @ txt.t() / temperature                        # 2. (N, N)，对角线是正样本对
-    labels = torch.arange(sim.size(0), device=sim.device)    # 3. (N,) 第 i 行的答案是第 i 列
-    loss_img = F.cross_entropy(sim, labels)                  # 4. 每张图在 N 段文字里找自己那段
-    loss_txt = F.cross_entropy(sim.t(), labels)              # 5. 每段文字在 N 张图里找自己那张
-    return (loss_img + loss_txt) / 2
-```
-
-PyTorch 没有内置的 CLIP loss，自测用能手算的情况对拍：4 个正交单位向量、τ = 0.5 时，对角线相似度是 2、其余是 0，每行 loss 都是 $\log(1+3e^{-2})$。
-
 #### 5. 知识蒸馏的 KL Loss
 
 两边的 logits 都除以温度 $T$ 再 softmax，$T>1$ 让分布变平，露出「这张 3 有点像 8」这类类别间的信息。loss 是老师分布到学生分布的 KL 散度，再乘 $T^2$：
@@ -1312,25 +1026,6 @@ def distillation_kl_loss(student_logits: torch.Tensor, teacher_logits: torch.Ten
 
 回归的 MSE 就是 `reduce_loss((pred - target) ** 2, reduction)`，前面先 `assert pred.shape == target.shape`，防 `(N, 1)` 减 `(N,)` 广播成 `(N, N)`；Huber 在 $|d|<\delta$ 时取 $\frac12 d^2$，否则取 $\delta(|d|-\frac12\delta)$，离群点的梯度被限制在 ±δ 以内。
 
-### 自测
-
-```python
-if __name__ == "__main__":
-    torch.manual_seed(42)
-    z, t = torch.randn(6, 5), torch.tensor([1, -100, 3, -100, 0, 2])     # (N, C), (N,)，两个位置被忽略
-    assert check(lambda a: cross_entropy_loss(a, t, label_smoothing=0.1),
-                 lambda a: F.cross_entropy(a, t, label_smoothing=0.1), z)
-    assert abs(cross_entropy_from_logits(z.numpy(), t.clamp(min=0).numpy()) - F.cross_entropy(z, t.clamp(min=0)).item()) < 1e-5
-    x, y, pw = torch.randn(6, 4) * 4, torch.randint(0, 2, (6, 4)).float(), torch.rand(4) * 5
-    x[0] = 0.0                                                              # 第 0 行全 0：查 x = 0 处的梯度
-    assert check(lambda a: bce_with_logits(a, y, pw), lambda a: F.binary_cross_entropy_with_logits(a, y, pos_weight=pw), x)
-    assert check(lambda a: BinaryFocalLoss(None, 0.0)(a, y), lambda a: F.binary_cross_entropy_with_logits(a, y), x)
-    s, tea = torch.randn(8, 10), torch.randn(8, 10) * 3                     # 学生、老师的 logits，(N, C)
-    assert check(lambda a: distillation_kl_loss(a, tea, 4.0), lambda a: 16 * F.kl_div(
-        F.log_softmax(a / 4, dim=-1), F.softmax(tea / 4, dim=-1), reduction="batchmean"), s)
-    assert abs(clip_loss(torch.eye(4), torch.eye(4), 0.5).item() - math.log(1 + 3 * math.exp(-2))) < 1e-6
-    print("all tests passed")
-```
 
 ### 关键追问
 
@@ -1460,34 +1155,6 @@ def make_loaders(n_train: int = 1000, n_val: int = 300, noise: float = 0.1,
             DataLoader(val_ds, batch_size=batch_size, shuffle=False))
 ```
 
-### 自测
-
-```python
-def test_training_loop() -> None:
-    torch.manual_seed(42)
-    train_loader, val_loader = make_loaders()              # 验证集 300 条，最后一批 44 条
-    model, criterion = MLP(2, 64, 2), nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
-    hist = fit(model, train_loader, val_loader, criterion, optimizer, patience=8, scheduler=scheduler, verbose=False)
-    val_loss, val_acc = evaluate(model, val_loader, criterion)
-    best = hist["val_loss"].index(min(hist["val_loss"]))
-    assert abs(val_loss - hist["val_loss"][best]) < 1e-7   # 1. 恢复的是最好那个 epoch 的权重
-    assert len(hist["val_loss"]) == best + 1 + 8           # 2. 之后连续 8 个 epoch 没变好就停
-    X_val, y_val = val_loader.dataset.tensors              # (300, 2), (300,)
-    with torch.no_grad():                                  # 3. 按样本数加权 = 整个验证集一次算
-        assert abs(val_loss - criterion(model(X_val), y_val).item()) < 1e-5
-    assert val_acc > 0.8 and evaluate(model, val_loader, criterion) == (val_loss, val_acc)   # 4. eval 下没有随机性
-    print(f"stopped at epoch {len(hist['val_loss'])}, best epoch {best + 1}, val acc {val_acc:.3f}")
-    print("all tests passed")
-
-
-if __name__ == "__main__":
-    test_training_loop()
-# stopped at epoch 34, best epoch 26, val acc 0.913
-# all tests passed
-```
-
 ### 关键追问
 
 - **`model.eval()` 和 `torch.no_grad()` 有什么区别？** `eval()` 改变层的计算：Dropout 不丢神经元，BatchNorm 用 running 统计量（9 节）；`no_grad()` 只是不建计算图，省内存和时间，不会关掉 Dropout。验证两个都要写：只写 `no_grad()` 结果每次不一样，只写 `eval()` 结果对但白建了计算图。
@@ -1521,39 +1188,6 @@ $$
 ```python
 import numpy as np
 
-
-class BatchNorm1d:
-    """x: (N, D)。momentum 是新 batch 统计量的权重（PyTorch 约定）"""
-
-    def __init__(self, dim: int, momentum: float = 0.1, eps: float = 1e-5):
-        self.gamma, self.beta = np.ones(dim), np.zeros(dim)            # 初始是恒等变换
-        self.running_mean, self.running_var = np.zeros(dim), np.ones(dim)
-        self.momentum, self.eps = momentum, eps
-
-    def forward(self, x: np.ndarray, training: bool = True) -> np.ndarray:
-        """x: (N, D) -> (N, D)"""
-        if training:
-            n, m = x.shape[0], self.momentum
-            mu, var = x.mean(axis=0), x.var(axis=0)                    # 1. (D,) 沿 batch 维，有偏方差
-            # 2. 滑动平均留给推理；PyTorch 的 running_var 用无偏方差（除以 N - 1）
-            self.running_mean = (1 - m) * self.running_mean + m * mu
-            self.running_var = (1 - m) * self.running_var + m * var * n / (n - 1)
-        else:
-            mu, var = self.running_mean, self.running_var              # 推理：用累积的统计量
-        self.inv_std = 1.0 / np.sqrt(var + self.eps)                   # 3. (D,)
-        self.x_hat = (x - mu) * self.inv_std                           # (N, D)，backward 要用
-        return self.gamma * self.x_hat + self.beta                     # 4. (N, D)
-
-    def backward(self, dout: np.ndarray) -> np.ndarray:
-        """只对 training=True 的前向成立。dout: (N, D) -> dx: (N, D)"""
-        n = dout.shape[0]
-        self.dgamma = (dout * self.x_hat).sum(axis=0)                  # (D,)
-        self.dbeta = dout.sum(axis=0)                                  # (D,) 前向广播，反向求和
-        dx_hat = dout * self.gamma                                     # (N, D)
-        return self.inv_std / n * (n * dx_hat - dx_hat.sum(axis=0)
-                                   - self.x_hat * (dx_hat * self.x_hat).sum(axis=0))
-
-
 def layer_norm(x: np.ndarray, gamma: np.ndarray, beta: np.ndarray, eps: float = 1e-5) -> np.ndarray:
     """x: (B, T, D)；gamma, beta: (D,)。每个 token 沿特征维单独标准化"""
     mu = x.mean(axis=-1, keepdims=True)                                # (B, T, 1)
@@ -1565,52 +1199,6 @@ def rms_norm(x: np.ndarray, gamma: np.ndarray, eps: float = 1e-6) -> np.ndarray:
     """RMSNorm：不减均值、没有 beta，只按均方根缩放。x: (B, T, D) -> (B, T, D)"""
     return gamma * x / np.sqrt((x ** 2).mean(axis=-1, keepdims=True) + eps)
 ```
-
-### 自测
-
-```python
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-
-
-def run_norm_tests() -> None:
-    rng = np.random.default_rng(0)
-    x, dout = rng.standard_normal((8, 4)) * 3 + 1, rng.standard_normal((8, 4))   # (N, D)
-    bn, ref = BatchNorm1d(4), nn.BatchNorm1d(4).double()
-    xt = torch.tensor(x, requires_grad=True)
-    out_ref = ref(xt)                                   # 训练模式，同时更新 running 统计量
-    out_ref.backward(torch.tensor(dout))
-    assert np.allclose(bn.forward(x), out_ref.detach().numpy())   # 1. 训练前向、running_var、backward
-    assert np.allclose(bn.running_var, ref.running_var.numpy())
-    assert np.allclose(bn.backward(dout), xt.grad.numpy())
-    ref.eval()                                          # 2. 推理模式用 running 统计量
-    assert np.allclose(bn.forward(x[:2], training=False), ref(torch.tensor(x[:2])).detach().numpy())
-    x3 = rng.standard_normal((2, 3, 4))                 # 3. (B, T, D)：LayerNorm 对拍；RMSNorm 输出均方根为 1
-    assert np.allclose(layer_norm(x3, np.ones(4), np.zeros(4)), F.layer_norm(torch.tensor(x3), (4,)).numpy())
-    assert np.allclose((rms_norm(x3, np.ones(4)) ** 2).mean(axis=-1), 1, atol=1e-4)
-    print("all tests passed")
-
-
-if __name__ == "__main__":
-    run_norm_tests()
-```
-
-### 对比
-
-|                | BatchNorm                                      | LayerNorm                        | RMSNorm                   |
-| -------------- | ---------------------------------------------- | -------------------------------- | ------------------------- |
-| 统计量的轴     | batch 维 `axis=0`                              | 特征维 `axis=-1`                 | 特征维，只算均方根        |
-| 依赖 batch     | 是，batch 小时噪声大                           | 否                               | 否                        |
-| 训练和推理不同 | 是：训练用 batch 统计量，推理用 running 统计量 | 否                               | 否                        |
-| 常见位置       | batch 较大的前馈网络                           | Transformer（原论文、BERT、GPT） | LLaMA 等 decoder-only LLM |
-
-### 关键追问
-
-- **为什么要 γ 和 β？** 强行标准化会限制表达能力，有了 γ、β，网络可以学回需要的尺度和偏移。$\gamma=\sqrt{\sigma^2+\epsilon}$、$\beta=\mu$ 时完全还原原始输入。
-- **忘了 `model.eval()` 会怎样？** BN 继续用当前 batch 的统计量，同一个样本的输出会随 batch 里其他样本变化，还会继续改 running 统计量。`torch.no_grad()` 不切换这个行为。
-- **batch 很小时怎么办？** 统计量噪声大，效果明显变差；batch 为 1 时 PyTorch 在训练模式下直接报错。改用 LayerNorm 或 GroupNorm，它们不依赖 batch。
-- **Pre-Norm 还是 Post-Norm？** Post-Norm（原论文）是 `LN(x + sublayer(x))`，层数深时训练不稳、依赖 warmup。Pre-Norm 是 `x + sublayer(LN(x))`，残差成为直通的主干，训练更稳，是现代 LLM 的默认选择。
 
 ---
 
@@ -1814,28 +1402,6 @@ print(len(lm.vocab), lm.prob("nlp", ["like"]), lm.perplexity(test))   # 8 0.2727
 print(NGramLM(n=2, k=0.0).train(corpus).perplexity(test))       # inf：MLE 遇到没见过的 bigram
 ```
 
-### 自测
-
-用上面的 `corpus`、`lm`（bigram，k=1）和 `NGramLM`：
-
-```python
-def test_ngram() -> None:
-    # 1. 手算：V = 6 个词 + </s> + <unk> = 8；P(nlp | like) = (2 + 1) / (3 + 8)；生词按 <unk> 算，(0 + 1) / 11
-    assert math.isclose(lm.prob("nlp", ["like"]), 3 / 11) and math.isclose(lm.prob("xyz", ["like"]), 1 / 11)
-    # 2. 任意 n、任意上下文（包括没见过的），整个词表上的概率和都是 1
-    for n in [1, 2, 3]:
-        model = NGramLM(n=n, k=0.5).train(corpus)
-        for context in [[], ["i", "like"], ["never", "seen"]]:
-            assert math.isclose(sum(model.prob(w, context) for w in model.vocab), 1.0)
-    # 3. "i like nlp" 的 4 个概率是 3/11、3/10、3/11、3/10，PPL = 几何平均的倒数
-    assert math.isclose(lm.perplexity([["i", "like", "nlp"]]), (3 / 11 * 3 / 10) ** (-1 / 2))
-    print("all tests passed")
-
-
-if __name__ == "__main__":
-    test_ngram()
-```
-
 ### 关键追问
 
 - **add-k 有什么问题？还有哪些平滑？** $V$ 很大时 add-k 从见过的词那里抢走太多概率，$k$ 一般取小于 1 并在验证集上调。改进有 Backoff（高阶没见过就退到低阶，stupid backoff 乘固定的 0.4）、Interpolation（$\lambda_3P_3+\lambda_2P_2+\lambda_1P_1$，$\lambda$ 在 held-out 上调）和 Kneser-Ney（计数减固定折扣，低阶分布用「跟在多少种不同的词后面」代替词频），Modified KN 是 n-gram 的事实标准。
@@ -1928,49 +1494,14 @@ ranks = {pair: rank for rank, pair in enumerate(merges)}
 print(encode_word("lowest", ranks), encode_word("newer", ranks))
 # ['low', 'est</w>'] ['new', 'e', 'r', '</w>']    没见过的词拆成学过的片段
 ```
-
-### 自测
-
-用上面的 `word_counts`、`merges`、`splits` 和 `ranks`：
-
-```python
-def test_bpe() -> None:
-    # 1. 前三次合并都在拼 e-s-t-</w>：newest(6) + widest(3) = 9，最高
-    assert train_bpe(word_counts, 3)[0] == [("e", "s"), ("es", "t"), ("est", EOW)]
-    # 2. 训练词按 rank 编码 == 训练结束时的切分
-    assert all(encode_word(w, ranks) == list(s) for w, s in splits.items())
-    # 3. 词表大小 = 11 个初始符号（10 个字母 + </w>）+ 10 次合并
-    assert len({ch for w in word_counts for ch in w} | {EOW} | {a + b for a, b in merges}) == 11 + 10
-    # 4. 往返：去掉 </w> 拼回去就是原词；num_merges 给很大时每个词合并成一个 token 就停
-    assert "".join(encode_word("slowest", ranks)).replace(EOW, "") == "slowest"
-    assert all(len(s) == 1 for s in train_bpe(word_counts, 1000)[1].values())
-    print("all tests passed")
-
-
-if __name__ == "__main__":
-    test_bpe()
-```
-
-### 变体
-
-- **Byte-level BPE（GPT-2）**：初始符号是 256 个字节，任何字符串都能编码、不需要 `<unk>`；词表 50257 = 256 + 50000 次合并 + 1 个 `<|endoftext|>`，用并进 token 的词前空格（`Ġ`）代替 `</w>`。
-- **WordPiece（BERT）** 选 pair 的分数是 $c(ab)/(c(a)\,c(b))$，编码按词表从左到右最长匹配，词中片段带 `##`；**Unigram（SentencePiece）** 从大词表出发反复删掉对语料似然影响最小的 token，编码用 Viterbi 找概率最大的切分。
-
-### 关键追问
-
-- **训练复杂度？怎么加速？** 朴素版每次合并都重扫所有词，复杂度 $O(MN)$（$M$ 是合并次数，$N$ 是去重后所有词的符号总数）。HF tokenizers、SentencePiece 维护 pair 计数和「pair 到包含它的词」的倒排索引，合并时只更新受影响的词，最高频 pair 用堆找。
-- **encode 为什么必须按 rank 合并？** 后面的 merge 建立在前面的之上（`(new, est</w>)` 要求 `est</w>` 先合出来），按 rank 合并就是在这个词上重放训练，训练词能复现训练时的切分（自测第 2 条）。顺序一乱会得到训练时没见过的 token 组合，同一个词训练和推理时的 id 序列对不上。
-- **词表大小怎么权衡？** 词表大则序列短、上下文窗口装得多，代价是 embedding 和输出层的 $V\times d$ 矩阵变大、罕见 token 训练不足；词表小则序列变长，注意力计算量按长度平方涨。LLaMA 2 用 32000，LLaMA 3 扩到约 12.8 万。
-- **为什么先预分词？中文怎么办？** 预分词让合并不跨词边界，否则会学出 `in the`、`dog.` 这类 token，同一个词跟着不同标点就成了不同 token。中文没有空格：byte-level BPE 从 UTF-8 字节起步（一个汉字 3 个字节），SentencePiece 直接在原始文本上训练、空格当普通字符，罕见字用 byte fallback 退回字节。
-
 ---
 
 ## 目录
 
-| 部分 | 内容 |
-| --- | --- |
-| [第一部分（一）：机器学习与深度学习](MachineLearningFAQ/bagu.md) | ML 基础、评估指标、经典算法、神经网络与优化 |
+| 部分                                                                   | 内容                                                            |
+| ---------------------------------------------------------------------- | --------------------------------------------------------------- |
+| [第一部分（一）：机器学习与深度学习](MachineLearningFAQ/bagu.md)       | ML 基础、评估指标、经典算法、神经网络与优化                     |
 | [第一部分（二）：NLP、Transformer 与解码](MachineLearningFAQ/bagu2.md) | 词向量、RNN / LSTM、Attention、Transformer、Scaling laws 与解码 |
-| [第一部分（三）：LLM 训练与并行策略](MachineLearningFAQ/bagu3.md) | 预训练、SFT、RLHF、DPO、GRPO、蒸馏、合成数据与并行训练 |
-| [第二部分：ML Coding 基础](11-ml-coding-basics.md) | CodeSignal、NumPy、Pandas、PyTorch、纯 Python 矩阵运算 |
-| [第三部分：ML Coding 专题](12-ml-coding.md) | Transformer、经典机器学习、神经网络层与 NLP 手写实现 |
+| [第一部分（三）：LLM 训练与并行策略](MachineLearningFAQ/bagu3.md)      | 预训练、SFT、RLHF、DPO、GRPO、蒸馏、合成数据与并行训练          |
+| [第二部分：ML Coding 基础](11-ml-coding-basics.md)                     | CodeSignal、NumPy、Pandas、PyTorch、纯 Python 矩阵运算          |
+| [第三部分：ML Coding 专题](12-ml-coding.md)                            | Transformer、经典机器学习、神经网络层与 NLP 手写实现            |

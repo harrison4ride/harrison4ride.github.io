@@ -65,16 +65,17 @@
 
 ### 5. Generative Model vs Discriminative Model 生成模型 / 判别模型
 
- 生成模型通过学习联合概率 $P(X,Y)$，即特征 $x$ 与类别 $y$ 同时出现的概率，再对每一个类别求条件概率，取概率最大的类别作为预测结果，即 $P(Y|X) = \frac{P(X,Y)}{P(X)}$。
-  - 生成模型能学习到更多信息，如每个特征的边缘分布 $p(x)$；
-  - 生成模型收敛速度快，且对小规模数据或稀疏数据表现较好；
-  - 生成模型不容易出现过拟合现象；
-  - 生成模型的效果一般没有判别模型好。
+ 生成模型
+  - Learn the probability distribution of the data
+  - Model the joint distribution: $P(X,Y)$
+  -  This joint probability is hard to learn directly given the enormous number of possible sequences
+  -  Two typical ways to address this
+     -  Masked language modeling (e.g., BERT)
+     -  Autoregressive language modeling (e.g., GPT)
 
- 判别模型则是通过学习条件概率，即直接预测特征 $x$ 下类别 $y$ 的概率。
-  - 判别模型的分类边界更加灵活，能够拟合更加复杂的边界；
-  - 只用学习分类的信息，问题得到简化；
-  - 准确率普遍较生成模型较高。
+ 判别模型
+  - Learn to predict labels or properties from input
+  - Model the conditional distribution $P(Y|X) = \frac{P(X,Y)}{P(X)}$
 
 ## 机器学习中的评估指标 Metrics
 
@@ -608,10 +609,10 @@ $$
 
 ## 目录
 
-| 部分 | 内容 |
-| --- | --- |
-| [第一部分（一）：机器学习与深度学习](bagu.md) | ML 基础、评估指标、经典算法、神经网络与优化 |
-| [第一部分（二）：NLP、Transformer 与解码](bagu2.md) | 词向量、RNN / LSTM、Attention、Transformer、Scaling laws 与解码 |
-| [第一部分（三）：LLM 训练与并行策略](bagu3.md) | 预训练、SFT、RLHF、DPO、GRPO、蒸馏、合成数据与并行训练 |
-| [第二部分：ML Coding 基础](../11-ml-coding-basics.md) | CodeSignal、NumPy、Pandas、PyTorch、纯 Python 矩阵运算 |
-| [第三部分：ML Coding 专题](../12-ml-coding.md) | Transformer、经典机器学习、神经网络层与 NLP 手写实现 |
+| 部分                                                  | 内容                                                            |
+| ----------------------------------------------------- | --------------------------------------------------------------- |
+| [第一部分（一）：机器学习与深度学习](bagu.md)         | ML 基础、评估指标、经典算法、神经网络与优化                     |
+| [第一部分（二）：NLP、Transformer 与解码](bagu2.md)   | 词向量、RNN / LSTM、Attention、Transformer、Scaling laws 与解码 |
+| [第一部分（三）：LLM 训练与并行策略](bagu3.md)        | 预训练、SFT、RLHF、DPO、GRPO、蒸馏、合成数据与并行训练          |
+| [第二部分：ML Coding 基础](../11-ml-coding-basics.md) | CodeSignal、NumPy、Pandas、PyTorch、纯 Python 矩阵运算          |
+| [第三部分：ML Coding 专题](../12-ml-coding.md)        | Transformer、经典机器学习、神经网络层与 NLP 手写实现            |
