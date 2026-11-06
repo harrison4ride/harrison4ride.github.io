@@ -13,6 +13,7 @@
 #   6. restore MATH as \(..\) / \[..\] (post-render: backslashes survive; MathJax reads them)
 require 'kramdown'
 require 'kramdown-parser-gfm'
+require 'uri'
 
 module WikiRender
   KRAMDOWN_OPTS = {
@@ -99,7 +100,9 @@ module WikiRender
     md.gsub(/\]\(([^)#\s]+)(#[^)]*)?\)/) do
       target = Regexp.last_match(1)
       anchor = Regexp.last_match(2) || ''
-      link_map.key?(target) ? "](#{link_map[target]}#{anchor})" : "](#{target}#{anchor})"
+      # Markdown encodes spaces in filenames; the link map uses filesystem names.
+      mapped = link_map[target] || link_map[URI::DEFAULT_PARSER.unescape(target)]
+      mapped ? "](#{URI::DEFAULT_PARSER.escape(mapped)}#{anchor})" : "](#{target}#{anchor})"
     end
   end
 
